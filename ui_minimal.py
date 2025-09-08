@@ -323,7 +323,7 @@ Write a concise (4–6 bullets) executive summary for {ticker.upper()} using the
 TTM revenue: {fundamentals.get('reported', {}).get('revenue')}
 Margins: gross={fundamentals.get('margins', {}).get('gross_margin')}, operating={fundamentals.get('margins', {}).get('operating_margin')}, net={fundamentals.get('margins', {}).get('net_margin')}
 ROE={fundamentals.get('ratios', {}).get('roe')}, ROA={fundamentals.get('ratios', {}).get('roa')}, D/E={fundamentals.get('ratios', {}).get('debt_to_equity')}
-DCF EV={dcf.get('enterprise_value')}, Equity={dcf.get('equity_value')}, Per-share={dcf.get('fair_value_per_share')}, Terminal%={dcf.get('terminal_value_pct')}
+DCF EV={dcf.get('enterprise_value')}, Equity={dcf.get('equity_value')}, Per-share={dcf.get('fair_value_per_share')}, Terminal value share of EV (ratio)={dcf.get('terminal_value_pct')}
 Recent price: {last_px}, SMA20={sma20}, SMA50={sma50}, SMA200={sma200}, RSI14={rsi14}
 
 Tone: neutral, factual, non-promotional. Interpret; avoid absolute buy/sell language.
@@ -436,7 +436,7 @@ def post_report(ticker: str = Form(...)):
     try:
         md = _build_report_markdown(ticker)
         import markdown as md_parser
-        html_content = md_parser.markdown(md, extensions=["tables"])
+        html_content = md_parser.markdown(md, extensions=["extra", "sane_lists", "tables"])
         result_html = f"""
         <div class="panel">
           <h2>{ticker.upper()} Report</h2>
@@ -472,4 +472,5 @@ def debug_env():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8090")))
+
 
