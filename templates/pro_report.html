@@ -69,7 +69,7 @@
 
   {# ---------- helpers (robust to strings/Markup) ---------- #}
   {% macro _num(v) -%}
-    {# returns a numeric value or none, coercing strings/Markup like '$1,234.56' #}
+    {# Return float or none; accepts numbers, strings, or Markup like "$1,234.56" #}
     {%- if v is number -%}
       {{ v }}
     {%- else -%}
@@ -82,22 +82,11 @@
     {%- endif -%}
   {%- endmacro %}
 
-  {% macro money0(v) -%}
-    {%- set x = _num(v) -%}
-    {%- if x is not none -%}${{ '%.0f' % x }}{%- else -%}—{%- endif -%}
-  {%- endmacro %}
-  {% macro money2(v) -%}
-    {%- set x = _num(v) -%}
-    {%- if x is not none -%}${{ '%.2f' % x }}{%- else -%}—{%- endif -%}
-  {%- endmacro %}
-  {% macro mult(v) -%}
-    {%- set x = _num(v) -%}
-    {%- if x is not none -%}{{ '%.2fx' % x }}{%- else -%}—{%- endif -%}
-  {%- endmacro %}
-  {% macro pct(v, d=1) -%}
-    {%- set x = _num(v) -%}
-    {%- if x is not none -%}{{ ('%.' ~ d ~ 'f%%') % x }}{%- else -%}—{%- endif -%}
-  {%- endmacro %}
+  {% macro money0(v) %}{% set x=_num(v) %}{% if x is not none %}${{ '%.0f' % x }}{% else %}—{% endif %}{% endmacro %}
+  {% macro money2(v) %}{% set x=_num(v) %}{% if x is not none %}${{ '%.2f' % x }}{% else %}—{% endif %}{% endmacro %}
+  {% macro mult(v)   %}{% set x=_num(v) %}{% if x is not none %}{{ '%.2fx' % x }}{% else %}—{% endif %}{% endmacro %}
+  {% macro pct(v,d=1)%}{% set x=_num(v) %}{% if x is not none %}{{ ('%.' ~ d ~ 'f%%') % x }}{% else %}—{% endif %}{% endmacro %}
+  {% macro num1(v)   %}{% set x=_num(v) %}{% if x is not none %}{{ '%.1f' % x }}{% else %}—{% endif %}{% endmacro %}
 
   {# YoY helpers #}
   {% macro yoy_val(cur, prev) -%}
@@ -134,7 +123,7 @@
     </div>
     <div class="title">
       <h1>{{ (profile.companyName or profile.name or (company and company.name) or ticker) }}</h1>
-    <div class="subtitle">{{ profile.industry or '—' }} · {{ profile.sector or '—' }}</div>
+      <div class="subtitle">{{ profile.industry or '—' }} · {{ profile.sector or '—' }}</div>
     </div>
     <div class="callout">
       <div class="tp-label">Price</div>
@@ -270,7 +259,7 @@
           <div class="tagrow">
             <span class="pill">Sector ETF: {{ sector_inputs.chosen_sector_etf or "N/A" }}</span>
             {% if technical and technical.rsi_14 is not none %}
-              <span class="pill">RSI(14): {{ '%.1f' % (technical.rsi_14|float) }}</span>
+              <span class="pill">RSI(14): {{ num1(technical.rsi_14) }}</span>
             {% endif %}
           </div>
           {% if commentary and commentary.sector %}<div class="md">{{ commentary.sector | safe }}</div>
@@ -306,9 +295,9 @@
           </table>
           <figcaption class="muted small">
             Subject 5-yr avgs — EV/S:
-            {{ peer_five_year["EV/S 5y Avg"] is not none and ('%.2fx' % peer_five_year["EV/S 5y Avg"]) or "—" }},
+            {{ peer_five_year["EV/S 5y Avg"] is not none and ('%.2fx' % (_num(peer_five_year["EV/S 5y Avg"]))) or "—" }},
             EV/EBITDA:
-            {{ peer_five_year["EV/EBITDA 5y Avg"] is not none and ('%.2fx' % peer_five_year["EV/EBITDA 5y Avg"]) or "—" }}.
+            {{ peer_five_year["EV/EBITDA 5y Avg"] is not none and ('%.2fx' % (_num(peer_five_year["EV/EBITDA 5y Avg"]))) or "—" }}.
           </figcaption>
         </figure>
       </section>
