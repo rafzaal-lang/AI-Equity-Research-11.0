@@ -1,0 +1,132 @@
+{% extends "base_report.html" %}
+
+{% block title %}{{ company.name }} ({{ company.symbol }}) - Equity Research Report{% endblock %}
+
+{% block report_title %}
+    <img src="{{ company.logo_url }}" alt="{{ company.name }} Logo" style="max-height: 80px; margin-bottom: 10px;"><br>
+    {{ company.name }} ({{ company.symbol }})
+{% endblock %}
+
+{% block content %}
+
+    <!-- Executive Summary -->
+    <div class="section">
+        <h2 class="section-title">1. Executive Summary</h2>
+        <p>{{ executive_summary }}</p>
+        
+        <h4>Investment Thesis</h4>
+        <p>{{ investment_thesis }}</p>
+        
+        <h4>Key Risks</h4>
+        <ul>
+            {% for risk in key_risks %}
+                <li><strong>{{ risk.title }}:</strong> {{ risk.description }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+
+    <!-- Financial Analysis -->
+    <div class="section">
+        <h2 class="section-title">2. Financial Analysis</h2>
+        
+        <h3>2.1 Profitability</h3>
+        <div class="chart">
+            <img src="cid:profitability_chart" alt="Profitability Chart">
+        </div>
+        <table>
+            <tr>
+                <th>Metric</th>
+                {% for period in financial_summary.periods %}
+                    <th>{{ period }}</th>
+                {% endfor %}
+            </tr>
+            {% for metric, values in financial_summary.profitability.items() %}
+                <tr>
+                    <td>{{ metric }}</td>
+                    {% for value in values %}
+                        <td>{{ "%.2f"|format(value) if value is not none else 'N/A' }}</td>
+                    {% endfor %}
+                </tr>
+            {% endfor %}
+        </table>
+        <p class="citation">Source: FMP, AI Equity Research Platform</p>
+        
+        <h3>2.2 Liquidity & Solvency</h3>
+        <div class="chart">
+            <img src="cid:liquidity_chart" alt="Liquidity Chart">
+        </div>
+        <table>
+            <tr>
+                <th>Metric</th>
+                {% for period in financial_summary.periods %}
+                    <th>{{ period }}</th>
+                {% endfor %}
+            </tr>
+            {% for metric, values in financial_summary.liquidity.items() %}
+                <tr>
+                    <td>{{ metric }}</td>
+                    {% for value in values %}
+                        <td>{{ "%.2f"|format(value) if value is not none else 'N/A' }}</td>
+                    {% endfor %}
+                </tr>
+            {% endfor %}
+        </table>
+        <p class="citation">Source: FMP, AI Equity Research Platform</p>
+    </div>
+
+    <!-- Valuation -->
+    <div class="section">
+        <h2 class="section-title">3. Valuation</h2>
+        
+        <h3>3.1 Discounted Cash Flow (DCF) Analysis</h3>
+        <p>Our DCF analysis suggests a fair value of <strong>${{ dcf_valuation.fair_value_per_share | round(2) }}</strong> per share.</p>
+        
+        <h4>Key Assumptions</h4>
+        <ul>
+            <li>WACC: {{ "%.2f"|format(dcf_valuation.assumptions.wacc * 100) }}%</li>
+            <li>Terminal Growth Rate: {{ "%.2f"|format(dcf_valuation.assumptions.g_terminal * 100) }}%</li>
+            <li>Stage 1 Growth ({{ dcf_valuation.assumptions.years_stage1 }} years): {{ "%.2f"|format(dcf_valuation.assumptions.g1 * 100) }}%</li>
+            <li>Stage 2 Growth ({{ dcf_valuation.assumptions.years_stage2 }} years): {{ "%.2f"|format(dcf_valuation.assumptions.g2 * 100) }}%</li>
+        </ul>
+        
+        <div class="chart">
+            <img src="cid:dcf_sensitivity_chart" alt="DCF Sensitivity Analysis">
+        </div>
+        <p class="citation">Source: AI Equity Research Platform</p>
+        
+        <h3>3.2 Comparable Company Analysis</h3>
+        <div class="chart">
+            <img src="cid:comps_chart" alt="Comparable Company Analysis">
+        </div>
+        <table>
+            <tr>
+                <th>Company</th>
+                <th>P/E</th>
+                <th>P/S</th>
+                <th>EV/EBITDA</th>
+            </tr>
+            {% for comp in comparable_analysis.peers %}
+                <tr>
+                    <td>{{ comp.symbol }}</td>
+                    <td>{{ "%.2f"|format(comp.pe) if comp.pe is not none else 'N/A' }}</td>
+                    <td>{{ "%.2f"|format(comp.ps) if comp.ps is not none else 'N/A' }}</td>
+                    <td>{{ "%.2f"|format(comp.ev_ebitda) if comp.ev_ebitda is not none else 'N/A' }}</td>
+                </tr>
+            {% endfor %}
+        </table>
+        <p class="citation">Source: FMP, AI Equity Research Platform</p>
+    </div>
+
+    <!-- Risk Analysis -->
+    <div class="section">
+        <h2 class="section-title">4. Risk Analysis</h2>
+        {% for risk in detailed_risks %}
+            <h4>{{ risk.title }}</h4>
+            <p>{{ risk.description }}</p>
+            <p><strong>Mitigating Factors:</strong> {{ risk.mitigation }}</p>
+        {% endfor %}
+    </div>
+
+{% endblock %}
+
+
