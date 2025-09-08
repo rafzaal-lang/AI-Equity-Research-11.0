@@ -4,6 +4,8 @@ import os
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+from src.services.report.professional_report_generator import professional_report_generator as progen
+import base64, pathlib
 
 from fastapi import FastAPI, Form, Query, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -472,5 +474,6 @@ def debug_env():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8090")))
+
 
 
