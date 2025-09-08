@@ -1,51 +1,60 @@
 {% extends "base_report.html" %}
 
-{% block title %}{{ company.name }} ({{ company.symbol }}) - Equity Research Report{% endblock %}
-
-{% macro fmt_num(v, d=2) -%}
-  {%- if v is not none -%}{{ ("%%.%df"|format(d))|format(v) }}{%- else -%}N/A{%- endif -%}
-{%- endmacro %}
-
-{% macro fmt_pct(v, d=2) -%}
-  {%- if v is not none -%}{{ ("%%.%df"|format(d))|format(v * 100) }}%{%- else -%}N/A{%- endif -%}
-{%- endmacro %}
-
-{% macro fmt_money(v, d=0, sym='$') -%}
-  {%- if v is not none -%}
-    {# basic money formatting; leave scaling to upstream #}
-    {{ sym }}{{ ("%%,.%df"|format(d))|format(v) }}
-  {%- else -%}N/A{%- endif -%}
-{%- endmacro %}
+{% block title %}{{ (company.name or "—") }} ({{ (company.symbol or "—") }}) - Equity Research Report{% endblock %}
 
 {% block report_title %}
-  {% if company.logo_url %}
-    <img src="{{ company.logo_url }}" alt="{{ company.name }} Logo" style="max-height: 80px; margin-bottom: 10px;"><br>
-  {% endif %}
-  {{ company.name }} ({{ company.symbol }})
-  <div style="font-size:12px;color:#6b7280;margin-top:6px;">
-    As of {{ as_of or "—" }} · Report ID: {{ report_id or "—" }} · v{{ report_version or "1.0" }}
-  </div>
+  {% if company.logo_url %}<img src="{{ company.logo_url }}" alt="{{ company.name }} Logo" style="max-height: 80px; margin-bottom: 10px;">{% endif %}<br>
+  {{ (company.name or "—") }} ({{ (company.symbol or "—") }})
 {% endblock %}
 
 {% block content %}
 
+  {# ---------- helpers / fallbacks ---------- #}
+  {% set dcf = dcf_valuation or {} %}
+  {% set A = dcf.assumptions or {} %}
+  {# WACC fallback: prefer enhanced key, else simple_dcf's discount_rate #}
+  {% set wacc = (A.wacc if A.wacc is not none else A.discount_rate) %}
+  {# Terminal growth fallback #}
+  {% set g_terminal = (A.g_terminal if A.g_terminal is not none else A.terminal_growth) %}
+  {# Stage1 growth fallback (or use simple revenue_growth) #}
+  {% set g1 = (A.g1 if A.g1 is not none else A.revenue_growth) %}
+  {# Stage2 growth may not exist in simple model #}
+  {% set g2 = A.g2 %}
+  {# Years mapping: enhanced vs simple projection_years #}
+  {% set years_stage1 = (A.years_stage1 if A.years_stage1 is not none else A.projection_years) %}
+  {% set years_stage2 = A.years_stage2 %}
+
+  {# Chart source resolver: prefer inline data URIs in chart_srcs.*, else use CID for EML packaging #}
+  {% set prof_src = (chart_srcs.profitability_chart if chart_srcs and chart_srcs.profitability_chart else 'cid:profitability_chart') %}
+  {% set liq_src  = (chart_srcs.liquidity_chart     if chart_srcs and chart_srcs.liquidity_chart     else 'cid:liquidity_chart') %}
+  {% set sens_src = (chart_srcs.dcf_sensitivity_chart if chart_srcs and chart_srcs.dcf_sensitivity_chart else 'cid:dcf_sensitivity_chart') %}
+  {% set comps_src= (chart_srcs.comps_chart         if chart_srcs and chart_srcs.comps_chart         else 'cid:comps_chart') %}
+
   <!-- 1. Executive Summary -->
   <div class="section">
     <h2 class="section-title">1. Executive Summary</h2>
-    <p>{{ executive_summary or "Summary unavailable." }}</p>
 
-    <h4>Investment Thesis</h4>
-    <p>{{ investment_thesis or "—" }}</p>
+    {% if executive_summary %}
+      <p>{{ executive_summary }}</p>
+    {% else %}
+      <p class="muted">No executive summary provided.</p>
+    {% endif %}
 
-    <h4>Key Risks</h4>
-    {% if key_risks %}
+    {% if investment_thesis %}
+      <h4>Investment Thesis</h4>
+      <p>{{ investment_thesis }}</p>
+    {% endif %}
+
+    {% if key_risks and key_risks|length > 0 %}
+      <h4>Key Risks</h4>
       <ul>
         {% for risk in key_risks %}
-          <li><strong>{{ risk.title }}</strong>{% if risk.description %}: {{ risk.description }}{% endif %}</li>
+          <li>
+            {% if risk.title %}<strong>{{ risk.title }}:</strong> {% endif %}
+            {{ risk.description or "-" }}
+          </li>
         {% endfor %}
       </ul>
-    {% else %}
-      <p>—</p>
     {% endif %}
   </div>
 
@@ -54,156 +63,148 @@
     <h2 class="section-title">2. Financial Analysis</h2>
 
     <!-- 2.1 Profitability -->
-    <h3>2.1 Profitability</h3>
-    {% set has_profitability = financial_summary and financial_summary.profitability and financial_summary.periods %}
-    {% if has_profitability %}
+    {% if financial_summary and financial_summary.profitability %}
+      <h3>2.1 Profitability</h3>
       <div class="chart">
-        <img src="cid:profitability_chart" alt="Profitability Chart"
-             onerror="this.style.display='none'">
+        <img src="{{ prof_src }}" alt="Profitability Chart">
       </div>
       <table>
-        <tr>
-          <th>Metric</th>
-          {% for period in financial_summary.periods %}
-            <th>{{ period }}</th>
-          {% endfor %}
-        </tr>
-        {% for metric, values in financial_summary.profitability.items() %}
+        <thead>
           <tr>
-            <td>{{ metric }}</td>
-            {% for value in values %}
-              <td>{{ fmt_num(value, 2) }}</td>
+            <th>Metric</th>
+            {% for period in (financial_summary.periods or []) %}
+              <th>{{ period }}</th>
             {% endfor %}
           </tr>
-        {% endfor %}
+        </thead>
+        <tbody>
+          {% for metric, values in financial_summary.profitability.items() %}
+            <tr>
+              <td>{{ metric }}</td>
+              {% for value in (values or []) %}
+                <td>
+                  {% if value is not none %}
+                    {{ "%.2f"|format(value) }}
+                  {% else %}
+                    N/A
+                  {% endif %}
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
       </table>
-    {% else %}
-      <p>Profitability time-series not available.</p>
+      <p class="citation">Source: FMP, AI Equity Research Platform</p>
     {% endif %}
-    <p class="citation">Source: FMP, AI Equity Research Platform</p>
 
     <!-- 2.2 Liquidity & Solvency -->
-    <h3>2.2 Liquidity &amp; Solvency</h3>
-    {% set has_liquidity = financial_summary and financial_summary.liquidity and financial_summary.periods %}
-    {% if has_liquidity %}
+    {% if financial_summary and financial_summary.liquidity %}
+      <h3>2.2 Liquidity &amp; Solvency</h3>
       <div class="chart">
-        <img src="cid:liquidity_chart" alt="Liquidity Chart"
-             onerror="this.style.display='none'">
+        <img src="{{ liq_src }}" alt="Liquidity Chart">
       </div>
       <table>
-        <tr>
-          <th>Metric</th>
-          {% for period in financial_summary.periods %}
-            <th>{{ period }}</th>
-          {% endfor %}
-        </tr>
-        {% for metric, values in financial_summary.liquidity.items() %}
+        <thead>
           <tr>
-            <td>{{ metric }}</td>
-            {% for value in values %}
-              <td>{{ fmt_num(value, 2) }}</td>
+            <th>Metric</th>
+            {% for period in (financial_summary.periods or []) %}
+              <th>{{ period }}</th>
             {% endfor %}
           </tr>
-        {% endfor %}
+        </thead>
+        <tbody>
+          {% for metric, values in financial_summary.liquidity.items() %}
+            <tr>
+              <td>{{ metric }}</td>
+              {% for value in (values or []) %}
+                <td>
+                  {% if value is not none %}
+                    {{ "%.2f"|format(value) }}
+                  {% else %}
+                    N/A
+                  {% endif %}
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
       </table>
-    {% else %}
-      <p>Liquidity &amp; solvency time-series not available.</p>
+      <p class="citation">Source: FMP, AI Equity Research Platform</p>
     {% endif %}
-    <p class="citation">Source: FMP, AI Equity Research Platform</p>
   </div>
 
   <!-- 3. Valuation -->
   <div class="section">
     <h2 class="section-title">3. Valuation</h2>
 
-    <!-- 3.1 DCF -->
+    <!-- 3.1 Discounted Cash Flow (DCF) Analysis -->
     <h3>3.1 Discounted Cash Flow (DCF) Analysis</h3>
     <p>
-      {% set fvps = dcf_valuation and dcf_valuation.fair_value_per_share %}
-      {% if fvps is not none %}
-        Our DCF analysis suggests a fair value of <strong>${{ fmt_num(fvps, 2) }}</strong> per share.
+      {% if dcf.fair_value_per_share is not none %}
+        Our DCF analysis suggests a fair value of <strong>${{ dcf.fair_value_per_share|round(2) }}</strong> per share.
       {% else %}
-        Our DCF analysis did not produce a reliable per-share estimate. Summary assumptions below.
+        Our DCF analysis provides enterprise/equity value estimates; per-share fair value is unavailable.
       {% endif %}
     </p>
 
-    {% set ass = dcf_valuation.assumptions if dcf_valuation else {} %}
     <h4>Key Assumptions</h4>
     <ul>
-      <li>WACC: {{ fmt_pct(ass.wacc, 2) }}</li>
-      <li>Terminal Growth Rate: {{ fmt_pct(ass.g_terminal, 2) }}</li>
-      <li>Stage 1 Growth ({{ ass.years_stage1 or "—" }} years): {{ fmt_pct(ass.g1, 2) }}</li>
-      <li>Stage 2 Growth ({{ ass.years_stage2 or "—" }} years): {{ fmt_pct(ass.g2, 2) }}</li>
+      <li>WACC: {% if wacc is not none %}{{ (wacc * 100)|round(2) }}%{% else %}—{% endif %}</li>
+      <li>Terminal Growth Rate: {% if g_terminal is not none %}{{ (g_terminal * 100)|round(2) }}%{% else %}—{% endif %}</li>
+      <li>Stage 1 Growth{% if years_stage1 %} ({{ years_stage1 }} years){% endif %}: {% if g1 is not none %}{{ (g1 * 100)|round(2) }}%{% else %}—{% endif %}</li>
+      <li>Stage 2 Growth{% if years_stage2 %} ({{ years_stage2 }} years){% endif %}: {% if g2 is not none %}{{ (g2 * 100)|round(2) }}%{% else %}—{% endif %}</li>
     </ul>
 
-    {% set val = financial_summary.valuation if financial_summary else {} %}
-    {% if val and (val.ev is not none or val.equity is not none) %}
-      <p>
-        <em>Valuation bridge:</em>
-        {% if val.ev is not none %} EV {{ fmt_money(val.ev, 0, '$') }}{% endif %}
-        {% if val.equity is not none %} · Equity {{ fmt_money(val.equity, 0, '$') }}{% endif %}
-      </p>
-    {% endif %}
-
-    {% set sens = val.sensitivity if val else {} %}
-    {% if sens and sens.z %}
+    {% if chart_srcs or dcf_sensitivity_chart %}
       <div class="chart">
-        <img src="cid:dcf_sensitivity_chart" alt="DCF Sensitivity Analysis"
-             onerror="this.style.display='none'">
+        <img src="{{ sens_src }}" alt="DCF Sensitivity Analysis">
       </div>
       <p class="citation">Source: AI Equity Research Platform</p>
-    {% else %}
-      <p class="citation">Sensitivity grid unavailable.</p>
     {% endif %}
 
     <!-- 3.2 Comparable Company Analysis -->
-    <h3>3.2 Comparable Company Analysis</h3>
-    {% set comps = comparable_analysis or {} %}
-    {% set peers = comps.peers or [] %}
-    {% if peers %}
+    {% set comps = comparable_analysis or comps or {} %}
+    {% if comps.peers and comps.peers|length > 0 %}
+      <h3>3.2 Comparable Company Analysis</h3>
       <div class="chart">
-        <img src="cid:comps_chart" alt="Comparable Company Analysis"
-             onerror="this.style.display='none'">
+        <img src="{{ comps_src }}" alt="Comparable Company Analysis">
       </div>
       <table>
-        <tr>
-          <th>Company</th>
-          <th>P/E</th>
-          <th>P/S</th>
-          <th>EV/EBITDA</th>
-        </tr>
-        {% for comp in peers %}
+        <thead>
           <tr>
-            <td>{{ comp.symbol }}</td>
-            <td>{{ fmt_num(comp.pe, 2) }}</td>
-            <td>{{ fmt_num(comp.ps, 2) }}</td>
-            <td>{{ fmt_num(comp.ev_ebitda, 2) }}</td>
+            <th>Company</th>
+            <th>P/E</th>
+            <th>P/S</th>
+            <th>EV/EBITDA</th>
           </tr>
-        {% endfor %}
+        </thead>
+        <tbody>
+          {% for comp in comps.peers %}
+            {% set sym = comp.symbol if comp.symbol is not none else comp.ticker %}
+            <tr>
+              <td>{{ sym or "—" }}</td>
+              <td>{% if comp.pe is not none %}{{ "%.2f"|format(comp.pe) }}{% else %}—{% endif %}</td>
+              <td>{% if comp.ps is not none %}{{ "%.2f"|format(comp.ps) }}{% else %}—{% endif %}</td>
+              <td>{% if comp.ev_ebitda is not none %}{{ "%.2f"|format(comp.ev_ebitda) }}{% else %}—{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
       </table>
       <p class="citation">Source: FMP, AI Equity Research Platform</p>
-    {% else %}
-      <p>No comparable companies available.</p>
     {% endif %}
   </div>
 
   <!-- 4. Risk Analysis -->
-  <div class="section">
-    <h2 class="section-title">4. Risk Analysis</h2>
-    {% if detailed_risks %}
+  {% if detailed_risks and detailed_risks|length > 0 %}
+    <div class="section">
+      <h2 class="section-title">4. Risk Analysis</h2>
       {% for risk in detailed_risks %}
-        <h4>{{ risk.title }}</h4>
+        <h4>{{ risk.title or "Risk" }}</h4>
         <p>{{ risk.description or "—" }}</p>
-        {% if risk.mitigation %}<p><strong>Mitigating Factors:</strong> {{ risk.mitigation }}</p>{% endif %}
+        {% if risk.mitigation %}
+          <p><strong>Mitigating Factors:</strong> {{ risk.mitigation }}</p>
+        {% endif %}
       {% endfor %}
-    {% else %}
-      <p>—</p>
-    {% endif %}
-  </div>
-
-  {% if generation_date %}
-    <div style="margin-top:24px;font-size:12px;color:#6b7280;">
-      Generated {{ generation_date }}
     </div>
   {% endif %}
 
