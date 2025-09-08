@@ -5,11 +5,14 @@ from datetime import datetime, date
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Response, Request, Query, Body
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from pathlib import Path
 
+# Existing app business imports
 from src.services.report.composer import compose
 from src.services.financial_modeler import build_model
 from src.services.macro.snapshot import macro_snapshot
@@ -17,11 +20,18 @@ from src.services.quant.signals import momentum, rsi, sma_cross
 from src.services.comps.engine import comps_table
 from src.services.providers import fmp_provider as fmp
 
+# Pro report generator (FMP-only) import
+# Ensure this file exists per our earlier step:
+# src/services/report/professional_report_generator.py
+from src.services.report.professional_report_generator import render_pro_report_html
+
 log = logging.getLogger(__name__)
 
-app = FastAPI(title="Reports Service")
+app = FastAPI(title="AI Equity Research - Reports Service")
 
-# Permissive CORS
+# ---------------------------
+# CORS (permissive)
+# ---------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,6 +39,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------
+# Static mounts (serve CSS)
+# Supports either root /static or reports/static
+# ---------------------------
+# Mount /static if a root-level static folder exists
+if Path("static").exists():
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Mount /reports-static if you prefer assets under reports/static
+if Path("reports/static").exists():
+    app.mount("/reports-static", StaticFiles(directory="reports/static"), name="reports-static")
 
 DEFAULT_TICKER = os.getenv("DEFAULT_TICKER", "AAPL").strip() or "AAPL"
 
@@ -61,14 +83,12 @@ async def _extract_symbol_from_request(request: Request) -> Optional[str]:
         value = request.headers.get(header)
         if value and _looks_like_ticker(value):
             return value.strip()
-    
-    # 2) Try query params
+    # 2) Query params
     for param in ("ticker", "symbol", "t", "s", "q"):
         value = request.query_params.get(param)
         if value and _looks_like_ticker(value):
             return value.strip()
-    
-    # 3) Try JSON body
+    # 3) JSON body
     try:
         data = await request.json()
         if isinstance(data, dict):
@@ -80,8 +100,7 @@ async def _extract_symbol_from_request(request: Request) -> Optional[str]:
             return data.strip()
     except Exception:
         pass
-    
-    # 4) Try form data
+    # 4) Form data
     try:
         form = await request.form()
         for key, value in form.multi_items():
@@ -89,28 +108,33 @@ async def _extract_symbol_from_request(request: Request) -> Optional[str]:
                 return str(value).strip()
     except Exception:
         pass
-    
-    # 5) Try raw body as plain text
+    # 5) Raw body (plain text)
     try:
         raw = (await request.body()).decode(errors="ignore").strip()
         if raw and _looks_like_ticker(raw):
             return raw
     except Exception:
         pass
-    
     return None
 
+# ---------------------------
 # Routes
+# ---------------------------
 @app.get("/")
 def root():
     return {
         "service": "AI Equity Research - Reports Service",
-        "version": "9.3",
+        "version": "9.4",
         "status": "healthy",
         "endpoints": {
             "health": "/v1/health",
             "report_get": "/v1/report/{ticker}",
-            "report_post": "/report",
+            "report_post": "/v1/report",
+            "report_compat_get": "/report",
+            "report_compat_post": "/report",
+            # New HTML Pro Report endpoints:
+            "pro_report_html": "/v1/pro-report/{ticker}",
+            "pro_report_html_compat": "/pro-report",
             "metrics": "/metrics",
             "docs": "/docs"
         }
@@ -132,6 +156,9 @@ def favicon():
 def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
+# ---------------------------
+# Markdown report builder (existing behavior)
+# ---------------------------
 def _build_report_markdown(ticker: str) -> str:
     """Build report markdown for a ticker."""
     model = build_model(ticker)
@@ -183,7 +210,9 @@ def _build_report_markdown(ticker: str) -> str:
     )
     return md
 
-# Report endpoints
+# ---------------------------
+# Existing JSON report endpoints
+# ---------------------------
 @app.get("/v1/report/{ticker}", response_model=ReportResponse)
 def get_report_v1(ticker: str):
     """Get report for a ticker via URL path."""
@@ -229,23 +258,59 @@ async def post_report_compat(request: Request):
     try:
         # Extract symbol from request
         sym = await _extract_symbol_from_request(request)
-        
         if not sym:
             sym = DEFAULT_TICKER
             log.info("No ticker found in request, using default: %s", sym)
-        
         if not sym:
             raise HTTPException(status_code=400, detail="ticker or symbol is required")
-        
         md = _build_report_markdown(sym)
         return ReportResponse(symbol=sym.upper(), markdown=md)
-        
     except HTTPException:
         raise
     except Exception as e:
         log.error("Error in POST /report: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
+# ---------------------------
+# NEW: Pro Report HTML endpoints
+# ---------------------------
+@app.get("/v1/pro-report/{ticker}", response_class=HTMLResponse)
+def get_pro_report_html(ticker: str):
+    """
+    Render the Professional Pro Report as HTML.
+    Uses FMP-only data pipeline. Returns fully rendered HTML page.
+    """
+    try:
+        path = render_pro_report_html(ticker)
+        with open(path, "r", encoding="utf-8") as f:
+            html = f.read()
+        return HTMLResponse(content=html, status_code=200)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("Pro report generation failed")
+        return HTMLResponse(content=f"<h3>Error</h3><pre>{e}</pre>", status_code=500)
+
+@app.get("/pro-report", response_class=HTMLResponse)
+def get_pro_report_html_compat(ticker: Optional[str] = Query(default=None), symbol: Optional[str] = Query(default=None)):
+    """Compatibility GET: /pro-report?ticker=MSFT"""
+    sym = (ticker or symbol or "").strip() or DEFAULT_TICKER
+    if not sym:
+        raise HTTPException(status_code=400, detail="ticker or symbol is required")
+    try:
+        path = render_pro_report_html(sym)
+        with open(path, "r", encoding="utf-8") as f:
+            html = f.read()
+        return HTMLResponse(content=html, status_code=200)
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception("Pro report generation failed")
+        return HTMLResponse(content=f"<h3>Error</h3><pre>{e}</pre>", status_code=500)
+
+# ---------------------------
+# Entry point
+# ---------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8086")))
