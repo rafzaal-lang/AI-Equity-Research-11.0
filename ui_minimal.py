@@ -5,7 +5,6 @@ import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 from src.services.report.professional_report_generator import professional_report_generator as progen
-import base64, pathlib
 
 from fastapi import FastAPI, Form, Query, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -128,11 +127,9 @@ def _llm_commentary(prompt: str) -> Optional[str]:
         return None
 
 def _bulletize(text: str) -> str:
-    """Force bullet formatting + ensure Markdown renders as a list."""
     if not text:
         return ""
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    # If single paragraph, split into sentence-ish chunks.
     if len(lines) <= 1 and "." in text:
         parts = [p.strip() for p in text.replace("\n", " ").split(".") if p.strip()]
         lines = parts
@@ -209,39 +206,142 @@ def _build_peer_rows(tickers: List[str]) -> List[List[str]]:
 
 # ---------- Composer sanitizer ----------
 def _clean_composer_markdown(md_core: str, ticker: str) -> str:
-    """
-    Remove leading printed-dict artifact & ensure a clean title.
-    Handles cases where the dict and the title appear on the same line.
-    """
     if not isinstance(md_core, str):
         return ""
     s = md_core.lstrip()
-
-    # If the very first non-space char is '{', drop the first "line" (or up to first newline).
     if s.startswith("{"):
         nl = s.find("\n")
-        if nl != -1:
-            s = s[nl+1:]
-        else:
-            # No newline — nuke the blob entirely (we'll add our own header)
-            s = ""
-
-    # Also strip if the first line still looks like a Python dict (safety net)
+        s = s[nl+1:] if nl != -1 else ""
     lines = s.splitlines()
     if lines and lines[0].strip().startswith("{'symbol'"):
         s = "\n".join(lines[1:])
-
-    # If what's left begins with an em-dash title fragment or anything not a markdown header, prepend our header.
     if not s.lstrip().startswith("#"):
         as_of = datetime.utcnow().date().isoformat()
         header = f"# {ticker.upper()} — Equity Research Note\n_As of {as_of}_\n\n"
         s = header + s.lstrip()
-
     return s
 
-# ---------- Report builder ----------
+# ---------- Pro-report mapping helpers ----------
+def _fmt2(x):
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+def _build_sensitivity_grid_from_model(model: Dict[str, Any]) -> Dict[str, Any]:
+    sa = ((model.get("dcf_valuation") or {}).get("sensitivity_analysis")) or {}
+    if not isinstance(sa, dict) or not sa:
+        return {}
+    import re
+    wset, tset, cell = set(), set(), {}
+    pat = re.compile(r"wacc_([\d.]+)%_tg_([\d.]+)%")
+    for k, v in sa.items():
+        m = pat.search(str(k))
+        if not m: continue
+        w = float(m.group(1)); t = float(m.group(2))
+        wset.add(w); tset.add(t); cell[(t, w)] = v
+    if not wset or not tset:
+        return {}
+    xs = sorted(wset); ys = sorted(tset)
+    z = [[cell.get((y, x), None) for x in xs] for y in ys]
+    return {"x_labels": [f"{x:.1f}%" for x in xs], "y_labels": [f"{y:.1f}%" for y in ys], "z": z}
+
+def _get_peer_comps_for_template(tickers: List[str]) -> List[Dict[str, Any]]:
+    peers = []
+    for sym in tickers or []:
+        try:
+            q = fmp.quote(sym) or {}
+            ratios = (fmp.ratios(sym, period="ttm") or {}).get("ratios") or []
+            r0 = ratios[0] if ratios else {}
+            ev_ebitda = r0.get("enterpriseValueOverEBITDA") or r0.get("evToEbitdaTTM") or r0.get("evToEbitda")
+            pe = r0.get("priceEarningsRatioTTM") or r0.get("priceEarningsRatio")
+            ps = r0.get("priceToSalesRatioTTM") or r0.get("priceToSalesRatio")
+            peers.append({
+                "symbol": sym,
+                "pe": _fmt2(pe),
+                "ps": _fmt2(ps),
+                "ev_ebitda": _fmt2(ev_ebitda),
+            })
+        except Exception:
+            continue
+    return peers
+
+def _to_template_payload(ticker: str, model: Dict[str, Any]) -> Dict[str, Any]:
+    f = model.get("core_financials", {}) or model.get("fundamentals", {}) or {}
+    rep = (f.get("reported") or {}) if isinstance(f, dict) else {}
+    margins = (f.get("margins") or {}) if isinstance(f, dict) else {}
+    ratios  = (f.get("ratios")  or {}) if isinstance(f, dict) else {}
+    dcf = model.get("dcf_valuation", {}) or {}
+    ass = dict(dcf.get("assumptions") or {})
+    if "wacc" not in ass and "discount_rate" in ass:
+        ass["wacc"] = ass["discount_rate"]
+    ass.setdefault("g_terminal", ass.get("terminal_growth"))
+    ass.setdefault("g1", ass.get("revenue_growth"))
+    ass.setdefault("g2", 0.04)
+    if "years_stage1" not in ass and "projection_years" in ass:
+        ass["years_stage1"] = ass["projection_years"]
+    ass.setdefault("years_stage2", 0)
+
+    financial_summary = {
+        "periods": [],
+        "profitability": {},
+        "liquidity": {},
+        "valuation": {
+            "ev": dcf.get("enterprise_value"),
+            "equity": dcf.get("equity_value"),
+            "sensitivity": _build_sensitivity_grid_from_model(model),
+        },
+        "comparable_analysis": {
+            "peers": _get_peer_comps_for_template(_fetch_peers(ticker))
+        },
+    }
+
+    exec_summary = ""
+    if rep.get("revenue") is not None:
+        try:
+            rev_num = float(rep["revenue"])
+            exec_summary = (
+                f"{ticker.upper()} reported TTM revenue of {rev_num:,.0f} with "
+                f"net margin {round((margins.get('net_margin') or 0)*100,1)}% "
+                f"and ROE {round((ratios.get('roe') or 0)*100,1)}%."
+            )
+        except Exception:
+            pass
+
+    return {
+        "company": {
+            "name": ticker.upper(),
+            "symbol": ticker.upper(),
+            "logo_url": f"https://logo.clearbit.com/{ticker.lower()}.com"
+        },
+        "as_of": datetime.utcnow().date().isoformat(),
+        "executive_summary": exec_summary,
+        "investment_thesis": "Stable cash generation and services growth; valuation anchored by significant terminal value.",
+        "key_risks": [
+            {"title": "Competition", "description": "Ongoing competitive pressure across hardware and services."},
+            {"title": "Regulatory", "description": "App store, antitrust, and privacy regulatory scrutiny."},
+        ],
+        "financial_summary": financial_summary,
+        "dcf_valuation": {
+            "fair_value_per_share": dcf.get("fair_value_per_share"),
+            "assumptions": {
+                "wacc": ass.get("wacc"),
+                "g_terminal": ass.get("g_terminal"),
+                "g1": ass.get("g1"),
+                "g2": ass.get("g2"),
+                "years_stage1": ass.get("years_stage1"),
+                "years_stage2": ass.get("years_stage2"),
+            }
+        },
+        "comparable_analysis": financial_summary["comparable_analysis"],
+        "detailed_risks": [
+            {"title": "Supply Chain", "description": "Concentration in key suppliers may disrupt availability.", "mitigation": "Diversification and strategic inventory."},
+            {"title": "FX Exposure", "description": "Revenue sensitivity to USD strength.", "mitigation": "Hedging program and localized pricing."},
+        ],
+    }
+
+# ---------- Report builder (Markdown path) ----------
 def _build_report_markdown(ticker: str) -> str:
-    """Build report markdown or raise HTTPException with useful details."""
     try:
         model = build_model(ticker, force_refresh=False)
     except Exception as e:
@@ -259,7 +359,6 @@ def _build_report_markdown(ticker: str) -> str:
         except Exception:
             macro = {}
 
-        # Price series
         try:
             hist = fmp.historical_prices(ticker, limit=300) or []
         except Exception:
@@ -292,7 +391,6 @@ def _build_report_markdown(ticker: str) -> str:
                 trend_note = "Price is below 200D and 50D<200D (downtrend bias)."
         price_note = f"Last price: {_fmt_money(last_px, BASE_CURRENCY, 2)}." if last_px else None
 
-        # Compose baseline (preserve your existing output)
         md_core_raw = compose_report({
             "symbol": ticker.upper(),
             "as_of": "latest",
@@ -316,7 +414,6 @@ def _build_report_markdown(ticker: str) -> str:
         })
         md_core = _clean_composer_markdown(md_core_raw, ticker)
 
-        # Executive Summary
         fundamentals = model.get("core_financials", {}) or model.get("fundamentals", {}) or {}
         dcf          = model.get("dcf_valuation", {})  or model.get("dcf", {})          or {}
         summary_prompt = f"""
@@ -336,7 +433,6 @@ Tone: neutral, factual, non-promotional. Interpret; avoid absolute buy/sell lang
         else:
             summary = _rule_based_summary(fundamentals, dcf, price_note, trend_note)
 
-        # Momentum table
         momentum_rows = [
             ["Last Price",     _fmt_money(last_px, BASE_CURRENCY, 2)],
             ["SMA(20)",        _fmt_money(sma20, BASE_CURRENCY, 2) if sma20 is not None else "—"],
@@ -347,7 +443,6 @@ Tone: neutral, factual, non-promotional. Interpret; avoid absolute buy/sell lang
         if trend_note:
             momentum_rows.append(["Trend Note", trend_note])
 
-        # Peer comps (best-effort)
         peer_syms = _fetch_peers(ticker)
         peer_rows = _build_peer_rows(peer_syms) if peer_syms else []
         comps_md = ""
@@ -358,10 +453,9 @@ Tone: neutral, factual, non-promotional. Interpret; avoid absolute buy/sell lang
                 ""
             ])
 
-        # Append our sections after composer
         as_of = datetime.utcnow().date().isoformat()
         extras = []
-        extras.append(f"\n---\n\n## Executive Summary (as of {as_of})\n\n")  # extra blank line to ensure bullets render
+        extras.append(f"\n---\n\n## Executive Summary (as of {as_of})\n\n")
         extras.append(summary + "\n")
         extras.append("## Price & Momentum\n\n")
         extras.append(_md_table(["Item", "Value"], momentum_rows) + "\n")
@@ -409,7 +503,10 @@ REPORT_FORM = """
       <label>Ticker:</label>
       <input class="input" type="text" name="ticker" placeholder="AAPL" required />
     </div>
-    <button class="btn" type="submit">Generate Report</button>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="btn" type="submit">Generate Markdown Report</button>
+      <button class="btn" type="button" onclick="var t=document.querySelector('input[name=ticker]').value||'AAPL'; window.location='/pro-report?ticker='+encodeURIComponent(t)">Generate Pro Report (HTML)</button>
+    </div>
   </form>
 </div>
 """
@@ -459,6 +556,77 @@ def download_report_md(ticker: str = Query(...)):
     md = _build_report_markdown(ticker)
     return PlainTextResponse(md, headers={"Content-Disposition": f"attachment; filename={ticker}_report.md"})
 
+# ---- Pro Report (HTML) ----
+@app.get("/pro-report", response_class=HTMLResponse)
+def pro_report(ticker: Optional[str] = Query(default=None)):
+    sym = (ticker or DEFAULT_TICKER).strip().upper()
+    try:
+        model = build_model(sym, force_refresh=False)
+        if isinstance(model, dict) and "error" in model:
+            raise HTTPException(status_code=400, detail=f"Model error: {model['error']}")
+        payload = _to_template_payload(sym, model)
+
+        # Prefer new generator API; fallback to older API
+        try:
+            if hasattr(progen, "generate_all"):
+                html, _charts = progen.generate_all(payload, inline_for_web=True)
+            else:
+                html_content, charts = progen.generate_report_with_charts(payload)
+                html = html_content
+                for cid, path in charts.items():
+                    html = html.replace(f"cid:{cid}", str(path))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Pro render error: {type(e).__name__}: {e}")
+
+        page = f"""
+        <div class="panel">
+          <h2>{sym} Pro Report</h2>
+          <div style="margin-bottom:12px; display:flex; gap:8px; flex-wrap:wrap;">
+            <a href="/pro-report.eml?ticker={sym}" class="btn" style="text-decoration:none;">Download EML</a>
+          </div>
+          <div style="border:1px solid var(--line);padding:18px;border-radius:12px;">{html}</div>
+        </div>
+        """
+        return HTMLResponse(render(page))
+    except HTTPException:
+        raise
+    except Exception as e:
+        return _html_error(f"Pro report error: {type(e).__name__}: {e}")
+
+# ---- Pro Report (EML) ----
+@app.get("/pro-report.eml", response_class=PlainTextResponse)
+def pro_report_eml(ticker: Optional[str] = Query(default=None)):
+    sym = (ticker or DEFAULT_TICKER).strip().upper()
+    try:
+        model = build_model(sym, force_refresh=False)
+        if isinstance(model, dict) and "error" in model:
+            raise HTTPException(status_code=400, detail=f"Model error: {model['error']}")
+        payload = _to_template_payload(sym, model)
+
+        # Build HTML and package with CIDs intact
+        try:
+            if hasattr(progen, "generate_all"):
+                html, charts = progen.generate_all(payload, inline_for_web=False)
+                eml_path = progen.package_report_as_eml(
+                    html, charts, subject=f"Equity Research Report: {sym}", to_email="<recipient>", from_email="<sender>"
+                )
+            else:
+                html_content, charts = progen.generate_report_with_charts(payload)
+                eml_path = progen.package_report_as_eml(
+                    html_content, charts, subject=f"Equity Research Report: {sym}", to_email="<recipient>", from_email="<sender>"
+                )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Pro EML error: {type(e).__name__}: {e}")
+
+        return PlainTextResponse(
+            f"EML saved to: {eml_path}",
+            headers={"Content-Disposition": f"attachment; filename={sym}_report.eml"}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        return _html_error(f"Pro report EML error: {type(e).__name__}: {e}")
+
 @app.get("/debug/env", response_class=PlainTextResponse)
 def debug_env():
     keys = [
@@ -474,6 +642,3 @@ def debug_env():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8090")))
-
-
-
