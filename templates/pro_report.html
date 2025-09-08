@@ -270,7 +270,7 @@
           <div class="tagrow">
             <span class="pill">Sector ETF: {{ sector_inputs.chosen_sector_etf or "N/A" }}</span>
             {% if technical and technical.rsi_14 is not none %}
-              <span class="pill">RSI(14): {{ '%.1f' % technical.rsi_14 }}</span>
+              <span class="pill">RSI(14): {{ '%.1f' % (technical.rsi_14|float) }}</span>
             {% endif %}
           </div>
           {% if commentary and commentary.sector %}<div class="md">{{ commentary.sector | safe }}</div>
