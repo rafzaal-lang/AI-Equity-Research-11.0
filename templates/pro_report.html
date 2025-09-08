@@ -134,7 +134,7 @@
     </div>
     <div class="title">
       <h1>{{ (profile.companyName or profile.name or (company and company.name) or ticker) }}</h1>
-      <div class="subtitle">{{ profile.industry or '—' }} · {{ profile.sector or '—' }}</div>
+    <div class="subtitle">{{ profile.industry or '—' }} · {{ profile.sector or '—' }}</div>
     </div>
     <div class="callout">
       <div class="tp-label">Price</div>
@@ -296,10 +296,10 @@
               {% for r in peer_rows or [] %}
               <tr>
                 <td>{{ r["Ticker"] }}</td>
-                <td class="tr">{{ r["EV/S (TTM)"] is not none and ('%.2fx' % r["EV/S (TTM)"]) or "—" }}</td>
-                <td class="tr">{{ r["EV/EBITDA (TTM)"] is not none and ('%.2fx' % r["EV/EBITDA (TTM)"]) or "—" }}</td>
-                <td class="tr">{{ r["Dividend Yield %"] is not none and ('%.2f%%' % r["Dividend Yield %"]) or "—" }}</td>
-                <td class="tr">{{ r["FCF Yield %"] is not none and ('%.2f%%' % r["FCF Yield %"]) or "—" }}</td>
+                <td class="tr">{{ mult(r["EV/S (TTM)"]) }}</td>
+                <td class="tr">{{ mult(r["EV/EBITDA (TTM)"]) }}</td>
+                <td class="tr">{{ pct(r["Dividend Yield %"],2) }}</td>
+                <td class="tr">{{ pct(r["FCF Yield %"],2) }}</td>
               </tr>
               {% endfor %}
             </tbody>
