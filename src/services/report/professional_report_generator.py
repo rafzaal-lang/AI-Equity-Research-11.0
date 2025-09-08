@@ -74,14 +74,12 @@ ROOT_DIR, TEMPLATES_DIR, STATIC_DIR, STATIC_URL_PREFIX = _resolve_paths()
 try:
     import markdown as _md
     def _md_to_html(txt: Optional[str]) -> str:
-        if not txt:
-            return ""
+        if not txt: return ""
         return _md.markdown(txt, extensions=["extra", "sane_lists", "tables"])
 except Exception:
     _md = None
     def _md_to_html(txt: Optional[str]) -> str:
-        if not txt:
-            return ""
+        if not txt: return ""
         s = txt.replace("**", "")
         s = s.replace("\r\n", "\n").strip()
         lines = [ln.strip() for ln in s.split("\n") if ln.strip()]
@@ -118,6 +116,65 @@ _cache = _Cache(ttl=600)
 
 def _cache_key(path: str, params: Optional[Dict[str, Any]]) -> str:
     return json.dumps({"p": path, "q": params or {}}, sort_keys=True)
+
+# ---------------------------
+# Safe numeric coercion (prevents Markup issues)
+# ---------------------------
+def _safe_num(x: Any) -> Optional[float]:
+    try:
+        # If markupsafe.Markup is present, treat it like str
+        from markupsafe import Markup  # type: ignore
+        if isinstance(x, Markup):
+            x = str(x)
+    except Exception:
+        pass
+
+    if x is None:
+        return None
+    if isinstance(x, (int, float)):
+        f = float(x)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    if isinstance(x, str):
+        s = x.strip().replace(",", "").replace("$", "").replace("%", "").replace("x", "")
+        try:
+            f = float(s)
+            if math.isnan(f) or math.isinf(f):
+                return None
+            return f
+        except Exception:
+            return None
+    try:
+        f = float(x)  # last resort
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    except Exception:
+        return None
+
+# ---------------------------
+# Jinja filters that always coerce via _safe_num
+# ---------------------------
+def _fmt_money0(v: Any) -> str:
+    n = _safe_num(v)
+    return "—" if n is None else "${:,.0f}".format(n)
+
+def _fmt_money2(v: Any) -> str:
+    n = _safe_num(v)
+    return "—" if n is None else "${:,.2f}".format(n)
+
+def _fmt_mult2(v: Any) -> str:
+    n = _safe_num(v)
+    return "—" if n is None else "{:.2f}x".format(n)
+
+def _fmt_pct(v: Any, places: int = 2) -> str:
+    n = _safe_num(v)
+    return "—" if n is None else ("{0:." + str(places) + "f}%").format(n)
+
+def _fmt_num1(v: Any) -> str:
+    n = _safe_num(v)
+    return "—" if n is None else "{:.1f}".format(n)
 
 # ---------------------------
 # HTTP helpers (FMP)
@@ -535,7 +592,7 @@ def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
         return {"financials": "", "industry": "", "sector": ""}
 
 # ---------------------------
-# Rendering
+# Rendering (fallback template uses safe filters, not .format)
 # ---------------------------
 _FALLBACK_CSS = """
 :root{--border:#e8e8e8;--muted:#666;--bg:#fff;--fg:#111}
@@ -587,11 +644,17 @@ _FALLBACK_HTML = """<!doctype html>
   <div class="card">
     <div class="k">{{ row.label }}</div>
     <div class="v">
-    {% if row.value is not none %}
-      {% if row.label in ["Market Cap","Debt","Cash","Enterprise Value (EV)"] %}{{ "${:,.0f}".format(row.value) }}
-      {% elif row.label in ["EV/S (TTM)","EV/EBITDA (TTM)"] %}{{ "{:.2f}".format(row.value) }}
-      {% else %}{{ "{:,.2f}".format(row.value) }}{% endif %}
-    {% else %}—{% endif %}
+      {% if row.value is not none %}
+        {% if row.label in ["Market Cap","Debt","Cash","Enterprise Value (EV)"] %}
+          {{ row.value | money0 }}
+        {% elif row.label in ["EV/S (TTM)","EV/EBITDA (TTM)"] %}
+          {{ row.value | mult2 }}
+        {% elif row.label in ["Share Price","52-day Avg"] %}
+          {{ row.value | money2 }}
+        {% else %}
+          {{ row.value | money0 }}
+        {% endif %}
+      {% else %}—{% endif %}
     </div>
   </div>
 {% endfor %}
@@ -617,13 +680,13 @@ _FALLBACK_HTML = """<!doctype html>
   <td>{{ r.metric }}</td>
   {% for y in years %}
     {% set val = r.get(y) %}
-    <td>{% if val is not none %}{{ "${:,.0f}".format(val) }}{% else %}—{% endif %}</td>
+    <td>{{ val | money0 }}</td>
   {% endfor %}
 </tr>
 {% endfor %}
 {% if estimates and (estimates.revenue_est or estimates.ebitda_est) %}
-<tr><td><em>Analyst Est. Revenue</em></td><td colspan="{{ years|length }}" style="text-align:right">{{ "${:,.0f}".format(estimates.revenue_est) if estimates.revenue_est else "—" }}</td></tr>
-<tr><td><em>Analyst Est. EBITDA</em></td><td colspan="{{ years|length }}" style="text-align:right">{{ "${:,.0f}".format(estimates.ebitda_est) if estimates.ebitda_est else "—" }}</td></tr>
+<tr><td><em>Analyst Est. Revenue</em></td><td colspan="{{ years|length }}" style="text-align:right">{{ estimates.revenue_est | money0 }}</td></tr>
+<tr><td><em>Analyst Est. EBITDA</em></td><td colspan="{{ years|length }}" style="text-align:right">{{ estimates.ebitda_est | money0 }}</td></tr>
 {% endif %}
 </tbody>
 </table>
@@ -636,22 +699,22 @@ _FALLBACK_HTML = """<!doctype html>
   <div class="card">
     <h3 style="margin-top:0">Last Quarter ({{ fin_snapshot.quarter.period or "N/A" }})</h3>
     <table>
-      <tr><td>Revenue</td><td>{{ "${:,.0f}".format(fin_snapshot.quarter.revenue) if fin_snapshot.quarter.revenue is not none else "—" }}</td></tr>
-      <tr><td>Gross Margin %</td><td>{{ "{:.1f}%".format(fin_snapshot.quarter.gross_margin_pct) if fin_snapshot.quarter.gross_margin_pct is not none else "—" }}</td></tr>
-      <tr><td>EBITDA</td><td>{{ "${:,.0f}".format(fin_snapshot.quarter.ebitda) if fin_snapshot.quarter.ebitda is not none else "—" }}</td></tr>
-      <tr><td>Net Income</td><td>{{ "${:,.0f}".format(fin_snapshot.quarter.net_income) if fin_snapshot.quarter.net_income is not none else "—" }}</td></tr>
-      <tr><td>Operating Cash Flow</td><td>{{ "${:,.0f}".format(fin_snapshot.quarter.ocf) if fin_snapshot.quarter.ocf is not none else "—" }}</td></tr>
-      <tr><td>Free Cash Flow</td><td>{{ "${:,.0f}".format(fin_snapshot.quarter.fcf) if fin_snapshot.quarter.fcf is not none else "—" }}</td></tr>
+      <tr><td>Revenue</td><td>{{ fin_snapshot.quarter.revenue | money0 }}</td></tr>
+      <tr><td>Gross Margin %</td><td>{{ fin_snapshot.quarter.gross_margin_pct | pct1 }}</td></tr>
+      <tr><td>EBITDA</td><td>{{ fin_snapshot.quarter.ebitda | money0 }}</td></tr>
+      <tr><td>Net Income</td><td>{{ fin_snapshot.quarter.net_income | money0 }}</td></tr>
+      <tr><td>Operating Cash Flow</td><td>{{ fin_snapshot.quarter.ocf | money0 }}</td></tr>
+      <tr><td>Free Cash Flow</td><td>{{ fin_snapshot.quarter.fcf | money0 }}</td></tr>
     </table>
   </div>
   <div class="card">
     <h3 style="margin-top:0">Year-to-Date ({{ fin_snapshot.ytd.year }})</h3>
     <table>
-      <tr><td>Revenue</td><td>{{ "${:,.0f}".format(fin_snapshot.ytd.revenue) if fin_snapshot.ytd.revenue is not none else "—" }}</td></tr>
-      <tr><td>EBITDA</td><td>{{ "${:,.0f}".format(fin_snapshot.ytd.ebitda) if fin_snapshot.ytd.ebitda is not none else "—" }}</td></tr>
-      <tr><td>Net Income</td><td>{{ "${:,.0f}".format(fin_snapshot.ytd.net_income) if fin_snapshot.ytd.net_income is not none else "—" }}</td></tr>
-      <tr><td>Operating Cash Flow</td><td>{{ "${:,.0f}".format(fin_snapshot.ytd.ocf) if fin_snapshot.ytd.ocf is not none else "—" }}</td></tr>
-      <tr><td>Free Cash Flow</td><td>{{ "${:,.0f}".format(fin_snapshot.ytd.fcf) if fin_snapshot.ytd.fcf is not none else "—" }}</td></tr>
+      <tr><td>Revenue</td><td>{{ fin_snapshot.ytd.revenue | money0 }}</td></tr>
+      <tr><td>EBITDA</td><td>{{ fin_snapshot.ytd.ebitda | money0 }}</td></tr>
+      <tr><td>Net Income</td><td>{{ fin_snapshot.ytd.net_income | money0 }}</td></tr>
+      <tr><td>Operating Cash Flow</td><td>{{ fin_snapshot.ytd.ocf | money0 }}</td></tr>
+      <tr><td>Free Cash Flow</td><td>{{ fin_snapshot.ytd.fcf | money0 }}</td></tr>
     </table>
   </div>
 </div>
@@ -666,7 +729,7 @@ _FALLBACK_HTML = """<!doctype html>
 {% if commentary.industry %}<div>{{ commentary.industry | safe }}</div>{% else %}<p class="muted">No LLM commentary available.</p>{% endif %}
 </div>
 <div class="card" style="margin-top:12px"><h3 style="margin-top:0">Sector Momentum & Technicals</h3>
-<p class="muted">Sector ETF: {{ sector_inputs.chosen_sector_etf or "N/A" }} • RSI(14): {{ "{:.1f}".format(technical.rsi_14) if technical.rsi_14 is not none else "N/A" }}</p>
+<p class="muted">Sector ETF: {{ sector_inputs.chosen_sector_etf or "N/A" }} • RSI(14): {{ technical.rsi_14 | num1 if technical.rsi_14 is not none else "N/A" }}</p>
 {% if commentary.sector %}<div>{{ commentary.sector | safe }}</div>{% else %}<p class="muted">No LLM commentary available.</p>{% endif %}
 </div>
 </section>
@@ -680,17 +743,17 @@ _FALLBACK_HTML = """<!doctype html>
 {% for r in peer_rows %}
 <tr>
   <td>{{ r["Ticker"] }}</td>
-  <td>{{ "{:.2f}".format(r["EV/S (TTM)"]) if r["EV/S (TTM)"] is not none else "—" }}</td>
-  <td>{{ "{:.2f}".format(r["EV/EBITDA (TTM)"]) if r["EV/EBITDA (TTM)"] is not none else "—" }}</td>
-  <td>{{ "{:.2f}%".format(r["Dividend Yield %"]) if r["Dividend Yield %"] is not none else "—" }}</td>
-  <td>{{ "{:.2f}%".format(r["FCF Yield %"]) if r["FCF Yield %"] is not none else "—" }}</td>
+  <td>{{ r["EV/S (TTM)"] | mult2 }}</td>
+  <td>{{ r["EV/EBITDA (TTM)"] | mult2 }}</td>
+  <td>{{ r["Dividend Yield %"] | pct2 }}</td>
+  <td>{{ r["FCF Yield %"] | pct2 }}</td>
 </tr>
 {% endfor %}
 </tbody>
 </table>
 <div class="muted" style="margin-top:8px">
-Subject 5-yr avgs: EV/S {{ "{:.2f}".format(peer_five_year["EV/S 5y Avg"]) if peer_five_year["EV/S 5y Avg"] is not none else "—" }},
-EV/EBITDA {{ "{:.2f}".format(peer_five_year["EV/EBITDA 5y Avg"]) if peer_five_year["EV/EBITDA 5y Avg"] is not none else "—" }}.
+Subject 5-yr avgs: EV/S {{ peer_five_year["EV/S 5y Avg"] | mult2 }},
+EV/EBITDA {{ peer_five_year["EV/EBITDA 5y Avg"] | mult2 }}.
 </div>
 </div>
 </section>
@@ -726,7 +789,6 @@ def _build_render_context(t: str) -> Dict[str, Any]:
     tech = ticker_technicals(t)
     sector = sector_momentum(profile.get("sector"))
 
-    # peers
     peers = fetch_peers(t)
     if not peers:
         static = {
@@ -748,17 +810,16 @@ def _build_render_context(t: str) -> Dict[str, Any]:
     peer_df, five_year = build_peers_table(t, peers)
 
     header_table = [
-        {"label": "Share Price", "value": quote.get("price")},
-        {"label": "52-day Avg", "value": quote.get("sma52")},
-        {"label": "Market Cap", "value": quote.get("market_cap")},
-        {"label": "Debt", "value": quote.get("debt")},
-        {"label": "Cash", "value": quote.get("cash")},
-        {"label": "Enterprise Value (EV)", "value": quote.get("ev")},
-        {"label": "EV/S (TTM)", "value": multiples.get("ev_s")},
-        {"label": "EV/EBITDA (TTM)", "value": multiples.get("ev_ebitda")},
+        {"label": "Share Price", "value": _safe_num(quote.get("price"))},
+        {"label": "52-day Avg", "value": _safe_num(quote.get("sma52"))},
+        {"label": "Market Cap", "value": _safe_num(quote.get("market_cap"))},
+        {"label": "Debt", "value": _safe_num(quote.get("debt"))},
+        {"label": "Cash", "value": _safe_num(quote.get("cash"))},
+        {"label": "Enterprise Value (EV)", "value": _safe_num(quote.get("ev"))},
+        {"label": "EV/S (TTM)", "value": _safe_num(multiples.get("ev_s"))},
+        {"label": "EV/EBITDA (TTM)", "value": _safe_num(multiples.get("ev_ebitda"))},
     ]
-    # NEW: provide a header_map to support templates that look up single values by label
-    header_map = {row["label"]: row["value"] for row in header_table}
+    header_map = {r["label"]: r["value"] for r in header_table}
 
     fin_snapshot = {"quarter": fundamentals["quarter"], "ytd": fundamentals["ytd"], "ttm": fundamentals["ttm"]}
 
@@ -777,16 +838,30 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         "ticker": t,
         "profile": profile,
         "header_table": header_table,
-        "header_map": header_map,  # compatibility convenience
+        "header_map": header_map,  # helpful for UI template variants
         "two_year": fundamentals["annual_two_years_table"],
         "estimates": estimates,
         "fin_snapshot": fin_snapshot,
         "peer_rows": peer_df.to_dict(orient="records"),
         "peer_five_year": five_year,
         "sector_inputs": sector_inputs,
-        "technical": tech,
+        "technical": {"rsi_14": _safe_num(tech.get("rsi_14"))},
         "commentary": commentary,
     }
+
+def _make_env() -> Environment:
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATES_DIR)),
+        autoescape=select_autoescape(["html", "xml"])
+    )
+    # register robust filters
+    env.filters["money0"] = _fmt_money0
+    env.filters["money2"] = _fmt_money2
+    env.filters["mult2"]  = _fmt_mult2
+    env.filters["pct1"]   = lambda v: _fmt_pct(v, 1)
+    env.filters["pct2"]   = lambda v: _fmt_pct(v, 2)
+    env.filters["num1"]   = _fmt_num1
+    return env
 
 def generate_html_report(payload: Dict[str, Any]) -> str:
     """
@@ -808,7 +883,7 @@ def generate_html_report(payload: Dict[str, Any]) -> str:
 
     ctx = _build_render_context(t)
 
-    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=select_autoescape(["html", "xml"]))
+    env = _make_env()
     template = _load_template(env)
 
     css_file = (STATIC_DIR / "pro_report.css")
@@ -839,16 +914,9 @@ def render_pro_report_html(ticker: str) -> str:
 
 # ---------- Charts/EML expected by UI ----------
 def _create_charts(financial_summary: Dict[str, Any]) -> Dict[str, str]:
-    """
-    Stub for now — UI can call this safely.
-    Return {cid: path_to_png}. Keep empty to skip images.
-    """
     return {}
 
 def package_report_as_eml(html_content: str, charts: Dict[str, str], subject: str, to_email: str, from_email: str) -> str:
-    """
-    Build a simple .eml file with inline images referenced by cid keys.
-    """
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     from email.mime.image import MIMEImage
