@@ -1,14 +1,19 @@
 # ui_minimal.py
 from __future__ import annotations
 import os
+import base64
+import pathlib
 import logging
 from typing import Optional, Dict, Any, List
 from datetime import datetime
-from src.services.report.professional_report_generator import professional_report_generator as progen
 
 from fastapi import FastAPI, Form, Query, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from jinja2 import Environment, BaseLoader, select_autoescape
+
+from src.services.report.professional_report_generator import (
+    professional_report_generator as progen
+)
 
 app = FastAPI(title="Equity Research — Minimal UI")
 
@@ -20,7 +25,7 @@ logger = logging.getLogger(__name__)
 def health():
     return {"ok": True}
 
-# Quiet Render "HEAD /" health probes
+# Quiet render "HEAD /" probes
 @app.head("/", response_class=PlainTextResponse)
 def _head_root():
     return PlainTextResponse("", status_code=200)
@@ -50,18 +55,24 @@ def _sym(cur: str) -> str:
     return _CURRENCY_SYMBOLS.get((cur or "").upper(), f"{cur or 'USD'} ")
 
 def _fmt_money(x: Any, cur: str = "USD", digits: int = 0) -> str:
-    try: v = float(x)
-    except Exception: return "—"
+    try:
+        v = float(x)
+    except Exception:
+        return "—"
     return f"{_sym(cur)}{v:,.{digits}f}"
 
 def _fmt_pct(x: Any, digits: int = 1) -> str:
-    try: v = float(x) * 100.0
-    except Exception: return "—"
+    try:
+        v = float(x) * 100.0
+    except Exception:
+        return "—"
     return f"{v:.{digits}f}%"
 
 def _fmt_num(x: Any, digits: int = 0) -> str:
-    try: v = float(x)
-    except Exception: return "—"
+    try:
+        v = float(x)
+    except Exception:
+        return "—"
     return f"{v:,.{digits}f}"
 
 def _md_table(headers: List[str], rows: List[List[str]]) -> str:
@@ -163,7 +174,7 @@ def _rule_based_summary(f: Dict[str, Any], dcf: Dict[str, Any], price_note: str 
         bullets.append(f"Terminal value is { _fmt_pct(tv_pct) } of EV, consistent with a mature profile.")
     return "\n".join("- " + b for b in bullets) if bullets else "- Key operating and valuation metrics available below."
 
-# ---------- Peer comps ----------
+# ---------- Peers ----------
 def _fetch_peers(symbol: str) -> List[str]:
     try:
         prof = fmp.profile(symbol) or {}
@@ -221,7 +232,14 @@ def _clean_composer_markdown(md_core: str, ticker: str) -> str:
         s = header + s.lstrip()
     return s
 
-# ---------- Pro-report mapping helpers ----------
+# ---------- Pro-report helpers ----------
+def _data_uri(path: pathlib.Path) -> Optional[str]:
+    try:
+        b = path.read_bytes()
+        return "data:image/png;base64," + base64.b64encode(b).decode("ascii")
+    except Exception:
+        return None
+
 def _fmt2(x):
     try:
         return float(x)
@@ -237,7 +255,8 @@ def _build_sensitivity_grid_from_model(model: Dict[str, Any]) -> Dict[str, Any]:
     pat = re.compile(r"wacc_([\d.]+)%_tg_([\d.]+)%")
     for k, v in sa.items():
         m = pat.search(str(k))
-        if not m: continue
+        if not m: 
+            continue
         w = float(m.group(1)); t = float(m.group(2))
         wset.add(w); tset.add(t); cell[(t, w)] = v
     if not wset or not tset:
@@ -266,6 +285,21 @@ def _get_peer_comps_for_template(tickers: List[str]) -> List[Dict[str, Any]]:
             continue
     return peers
 
+def _company_meta(ticker: str) -> Dict[str, Any]:
+    """Use FMP profile name/logo when available; fallback to Clearbit or placeholder."""
+    sym = ticker.upper()
+    name, logo = sym, None
+    try:
+        pf = fmp.profile(sym) or {}
+        name = pf.get("companyName") or name
+        logo = pf.get("image") or pf.get("logo")
+    except Exception:
+        pass
+    if not logo:
+        # Clearbit fallback (may not exist for all tickers)
+        logo = f"https://logo.clearbit.com/{sym.lower()}.com"
+    return {"name": name, "symbol": sym, "logo_url": logo}
+
 def _to_template_payload(ticker: str, model: Dict[str, Any]) -> Dict[str, Any]:
     f = model.get("core_financials", {}) or model.get("fundamentals", {}) or {}
     rep = (f.get("reported") or {}) if isinstance(f, dict) else {}
@@ -282,44 +316,39 @@ def _to_template_payload(ticker: str, model: Dict[str, Any]) -> Dict[str, Any]:
         ass["years_stage1"] = ass["projection_years"]
     ass.setdefault("years_stage2", 0)
 
+    # Build exec summary text
+    exec_summary = ""
+    if rep.get("revenue") is not None:
+        try:
+            rev_num = float(rep["revenue"])
+            net_m = margins.get('net_margin') or 0
+            roe_m = ratios.get('roe') or 0
+            exec_summary = (
+                f"{ticker.upper()} reported TTM revenue of {rev_num:,.0f} with "
+                f"net margin {round(net_m*100,1)}% and ROE {round(roe_m*100,1)}%."
+            )
+        except Exception:
+            exec_summary = f"{ticker.upper()} summary unavailable."
+
     financial_summary = {
-        "periods": [],
-        "profitability": {},
+        "periods": [],  # optional time-series (charts will still render gracefully if empty)
+        "profitability": {},   # (template guards against None/empty)
         "liquidity": {},
         "valuation": {
             "ev": dcf.get("enterprise_value"),
             "equity": dcf.get("equity_value"),
             "sensitivity": _build_sensitivity_grid_from_model(model),
         },
-        "comparable_analysis": {
-            "peers": _get_peer_comps_for_template(_fetch_peers(ticker))
-        },
     }
 
-    exec_summary = ""
-    if rep.get("revenue") is not None:
-        try:
-            rev_num = float(rep["revenue"])
-            exec_summary = (
-                f"{ticker.upper()} reported TTM revenue of {rev_num:,.0f} with "
-                f"net margin {round((margins.get('net_margin') or 0)*100,1)}% "
-                f"and ROE {round((ratios.get('roe') or 0)*100,1)}%."
-            )
-        except Exception:
-            pass
-
     return {
-        "company": {
-            "name": ticker.upper(),
-            "symbol": ticker.upper(),
-            "logo_url": f"https://logo.clearbit.com/{ticker.lower()}.com"
-        },
+        "company": _company_meta(ticker),
         "as_of": datetime.utcnow().date().isoformat(),
         "executive_summary": exec_summary,
         "investment_thesis": "Stable cash generation and services growth; valuation anchored by significant terminal value.",
         "key_risks": [
             {"title": "Competition", "description": "Ongoing competitive pressure across hardware and services."},
-            {"title": "Regulatory", "description": "App store, antitrust, and privacy regulatory scrutiny."},
+            {"title": "Regulatory", "description": "App Store, antitrust, and privacy regulatory scrutiny."},
         ],
         "financial_summary": financial_summary,
         "dcf_valuation": {
@@ -333,14 +362,16 @@ def _to_template_payload(ticker: str, model: Dict[str, Any]) -> Dict[str, Any]:
                 "years_stage2": ass.get("years_stage2"),
             }
         },
-        "comparable_analysis": financial_summary["comparable_analysis"],
+        "comparable_analysis": {
+            "peers": _get_peer_comps_for_template(_fetch_peers(ticker))
+        },
         "detailed_risks": [
             {"title": "Supply Chain", "description": "Concentration in key suppliers may disrupt availability.", "mitigation": "Diversification and strategic inventory."},
             {"title": "FX Exposure", "description": "Revenue sensitivity to USD strength.", "mitigation": "Hedging program and localized pricing."},
         ],
     }
 
-# ---------- Report builder (Markdown path) ----------
+# ---------- Markdown report builder ----------
 def _build_report_markdown(ticker: str) -> str:
     try:
         model = build_model(ticker, force_refresh=False)
@@ -535,7 +566,8 @@ def post_report(ticker: str = Form(...)):
     try:
         md = _build_report_markdown(ticker)
         import markdown as md_parser
-        html_content = md_parser.markdown(md, extensions=["extra", "sane_lists", "tables"])
+        # Use widely available extensions only
+        html_content = md_parser.markdown(md, extensions=["extra", "tables"])
         result_html = f"""
         <div class="panel">
           <h2>{ticker.upper()} Report</h2>
@@ -564,19 +596,22 @@ def pro_report(ticker: Optional[str] = Query(default=None)):
         model = build_model(sym, force_refresh=False)
         if isinstance(model, dict) and "error" in model:
             raise HTTPException(status_code=400, detail=f"Model error: {model['error']}")
+
+        # Build template payload
         payload = _to_template_payload(sym, model)
 
-        # Prefer new generator API; fallback to older API
-        try:
-            if hasattr(progen, "generate_all"):
-                html, _charts = progen.generate_all(payload, inline_for_web=True)
-            else:
-                html_content, charts = progen.generate_report_with_charts(payload)
-                html = html_content
-                for cid, path in charts.items():
-                    html = html.replace(f"cid:{cid}", str(path))
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Pro render error: {type(e).__name__}: {e}")
+        # Build charts first, convert to data URIs for web
+        charts = progen._create_charts(payload.get("financial_summary", {}) or {})
+        chart_srcs: Dict[str, str] = {}
+        for cid, p in (charts or {}).items():
+            uri = _data_uri(pathlib.Path(p))
+            if uri:
+                chart_srcs[cid] = uri
+        if chart_srcs:
+            payload["chart_srcs"] = chart_srcs  # template will prefer chart_srcs.* over cid:*
+
+        # Generate HTML via Jinja (adds generation_date, report_id, version)
+        html = progen.generate_html_report(payload)
 
         page = f"""
         <div class="panel">
@@ -601,22 +636,18 @@ def pro_report_eml(ticker: Optional[str] = Query(default=None)):
         model = build_model(sym, force_refresh=False)
         if isinstance(model, dict) and "error" in model:
             raise HTTPException(status_code=400, detail=f"Model error: {model['error']}")
-        payload = _to_template_payload(sym, model)
 
-        # Build HTML and package with CIDs intact
-        try:
-            if hasattr(progen, "generate_all"):
-                html, charts = progen.generate_all(payload, inline_for_web=False)
-                eml_path = progen.package_report_as_eml(
-                    html, charts, subject=f"Equity Research Report: {sym}", to_email="<recipient>", from_email="<sender>"
-                )
-            else:
-                html_content, charts = progen.generate_report_with_charts(payload)
-                eml_path = progen.package_report_as_eml(
-                    html_content, charts, subject=f"Equity Research Report: {sym}", to_email="<recipient>", from_email="<sender>"
-                )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Pro EML error: {type(e).__name__}: {e}")
+        # Build template payload WITHOUT chart_srcs so the template uses cid:*
+        payload = _to_template_payload(sym, model)
+        html_content = progen.generate_html_report(payload)
+
+        # Create charts and package with CIDs
+        charts = progen._create_charts(payload.get("financial_summary", {}) or {})
+        eml_path = progen.package_report_as_eml(
+            html_content, charts or {},
+            subject=f"Equity Research Report: {sym}",
+            to_email="<recipient>", from_email="<sender>"
+        )
 
         return PlainTextResponse(
             f"EML saved to: {eml_path}",
@@ -625,7 +656,7 @@ def pro_report_eml(ticker: Optional[str] = Query(default=None)):
     except HTTPException:
         raise
     except Exception as e:
-        return _html_error(f"Pro report EML error: {type(e).__name__}: {e}")
+        return PlainTextResponse(f"Pro report EML error: {type(e).__name__}: {e}", status_code=500)
 
 @app.get("/debug/env", response_class=PlainTextResponse)
 def debug_env():
