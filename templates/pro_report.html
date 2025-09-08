@@ -68,7 +68,12 @@
       {%- if not s or s in ['—','&mdash;'] -%}{{ none }}
       {%- else -%}
         {%- set s2 = s|replace(',','')|replace('$','')|replace('%','')|replace('x','') -%}
-        {{ s2|float if s2|replace('.','',1).isdigit() else none }}
+        {# Only convert to float if s2 is a valid number #}
+        {%- if s2|regex_match('^-?\\d*(\\.\\d+)?$') and s2 != '' -%}
+          {{ s2|float }}
+        {%- else -%}
+          {{ none }}
+        {%- endif -%}
       {%- endif -%}
     {%- endif -%}
   {%- endmacro %}
@@ -76,7 +81,7 @@
   {% macro money0(v) %}{% set x=_num(v) %}{% if x is not none %}${{ '%.0f' % x }}{% else %}—{% endif %}{% endmacro %}
   {% macro money2(v) %}{% set x=_num(v) %}{% if x is not none %}${{ '%.2f' % x }}{% else %}—{% endif %}{% endmacro %}
   {% macro mult(v)   %}{% set x=_num(v) %}{% if x is not none %}{{ '%.2fx' % x }}{% else %}—{% endif %}{% endmacro %}
-  {% macro pct(v,d=1)%}{% set x=_num(v) %}{% if x is not none %}{{ ('%.' ~ d ~ 'f%%') % x }}{% else %}—{% endif %}{% endmacro %}
+  {% macro pct(v,d=1)%}{% set x=_num(v) %}{% if x is not none %}{{ ("{0:." ~ d ~ "f}%").format(x) }}{% else %}—{% endif %}{% endmacro %}
   {% macro num1(v)   %}{% set x=_num(v) %}{% if x is not none %}{{ '%.1f' % x }}{% else %}—{% endif %}{% endmacro %}
 
   {% macro yoy_val(cur, prev) -%}
@@ -88,7 +93,7 @@
   {% macro yoy_badge(cur, prev) -%}
     {%- set y = yoy_val(cur, prev) -%}
     {%- if y is not none -%}
-      <span class="badge {{ 'pos' if y>0 else 'neg' }}">{{ '%+.1f%%' % y }}</span>
+      <span class="badge {{ 'pos' if y>0 else 'neg' }}">{{ '{:+.1f}%'.format(y) }}</span>
     {%- else -%}<span class="muted">—</span>{%- endif -%}
   {%- endmacro %}
 
@@ -270,9 +275,19 @@
           </table>
           <figcaption class="muted small">
             Subject 5-yr avgs — EV/S:
-            {{ peer_five_year["EV/S 5y Avg"] is not none and ('%.2fx' % (_num(peer_five_year["EV/S 5y Avg"]))) or "—" }},
+            {% set evs_avg = _num(peer_five_year["EV/S 5y Avg"]) %}
+            {% if evs_avg is not none %}
+              {{ '%.2fx' % evs_avg }}
+            {% else %}
+              —
+            {% endif %},
             EV/EBITDA:
-            {{ peer_five_year["EV/EBITDA 5y Avg"] is not none and ('%.2fx' % (_num(peer_five_year["EV/EBITDA 5y Avg"]))) or "—" }}.
+            {% set ebitda_avg = _num(peer_five_year["EV/EBITDA 5y Avg"]) %}
+            {% if ebitda_avg is not none %}
+              {{ '%.2fx' % ebitda_avg }}
+            {% else %}
+              —
+            {% endif %}.
           </figcaption>
         </figure>
       </section>
