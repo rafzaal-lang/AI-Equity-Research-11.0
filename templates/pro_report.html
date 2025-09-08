@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>{{ ticker }} – Professional Report</title>
 
-  <!-- Base styles so page looks good even without external CSS -->
   <style>
     :root{--bg:#fafafa;--panel:#fff;--ink:#0a0a0a;--muted:#6b7280;--line:#e5e7eb;--accent:#0f172a;--pos:#065f46;--neg:#991b1b}
     *{box-sizing:border-box}
@@ -57,7 +56,6 @@
     }
   </style>
 
-  <!-- Optional external/injected CSS -->
   {% if css_href %}
     <link rel="stylesheet" href="{{ css_href }}">
   {% elif css_inline %}
@@ -69,7 +67,6 @@
 
   {# ---------- helpers (robust to strings/Markup) ---------- #}
   {% macro _num(v) -%}
-    {# Return float or none; accepts numbers, strings, or Markup like "$1,234.56" #}
     {%- if v is number -%}
       {{ v }}
     {%- else -%}
@@ -82,27 +79,24 @@
     {%- endif -%}
   {%- endmacro %}
 
-  {% macro money0(v) %}{% set x=_num(v) %}{% if x is not none %}${{ '%.0f' % x }}{% else %}—{% endif %}{% endmacro %}
-  {% macro money2(v) %}{% set x=_num(v) %}{% if x is not none %}${{ '%.2f' % x }}{% else %}—{% endif %}{% endmacro %}
-  {% macro mult(v)   %}{% set x=_num(v) %}{% if x is not none %}{{ '%.2fx' % x }}{% else %}—{% endif %}{% endmacro %}
-  {% macro pct(v,d=1)%}{% set x=_num(v) %}{% if x is not none %}{{ ('%.' ~ d ~ 'f%%') % x }}{% else %}—{% endif %}{% endmacro %}
-  {% macro num1(v)   %}{% set x=_num(v) %}{% if x is not none %}{{ '%.1f' % x }}{% else %}—{% endif %}{% endmacro %}
+  {% macro money0(v) -%}{%- set x = _num(v) -%}{%- if x is not none -%}${{ '%.0f' % x }}{%- else -%}—{%- endif -%}{%- endmacro %}
+  {% macro money2(v) -%}{%- set x = _num(v) -%}{%- if x is not none -%}${{ '%.2f' % x }}{%- else -%}—{%- endif -%}{%- endmacro %}
+  {% macro mult(v)   -%}{%- set x = _num(v) -%}{%- if x is not none -%}{{ '%.2fx' % x }}{%- else -%}—{%- endif -%}{%- endmacro %}
+  {% macro pct(v,d=1) -%}{%- set x = _num(v) -%}{%- if x is not none -%}{{ ('%.' ~ d ~ 'f%%') % x }}{%- else -%}—{%- endif -%}{%- endmacro %}
 
-  {# YoY helpers #}
-  {% macro yoy_val(cur, prev) -%}
-    {%- set c = _num(cur) -%}{%- set p = _num(prev) -%}
-    {%- if c is not none and p is not none and p != 0 -%}
-      {{ (c - p) / p * 100.0 }}
-    {%- else -%}{{ none }}{%- endif -%}
-  {%- endmacro %}
+  {# YoY badge: compute inside this macro so we deal with real numbers, not Markup #}
   {% macro yoy_badge(cur, prev) -%}
-    {%- set y = yoy_val(cur, prev) -%}
-    {%- if y is not none -%}
+    {%- set c = _num(cur) -%}
+    {%- set p = _num(prev) -%}
+    {%- if c is not none and p is not none and p != 0 -%}
+      {%- set y = (c - p) / p * 100.0 -%}
       <span class="badge {{ 'pos' if y>0 else 'neg' }}">{{ '%+.1f%%' % y }}</span>
-    {%- else -%}<span class="muted">—</span>{%- endif -%}
+    {%- else -%}
+      <span class="muted">—</span>
+    {%- endif -%}
   {%- endmacro %}
 
-  {# Safely fetch a header metric by label; works with header_map or header_table #}
+  {# Header metric by label; works with header_map or header_table #}
   {% macro headv(label) -%}
     {%- if header_map is defined and header_map -%}
       {{ header_map.get(label) }}
@@ -134,7 +128,6 @@
 
   <!-- ===== Body with KPI rail ===== -->
   <div class="layout">
-    <!-- Left KPI rail -->
     <aside class="rail">
       <div class="panel">
         <h3 class="rail-h">Snapshot</h3>
@@ -156,17 +149,12 @@
       </div>
     </aside>
 
-    <!-- Main article -->
     <article class="main">
-      <!-- Company Overview -->
       <section class="section">
         <h2>Company Overview</h2>
-        <p class="lead">
-          {{ profile.description or "No company description available." }}
-        </p>
+        <p class="lead">{{ profile.description or "No company description available." }}</p>
       </section>
 
-      <!-- 2-Year Financials + Estimates -->
       <section class="section">
         <h2>Financials — Last 2 Fiscal Years & Estimates</h2>
         <figure class="card">
@@ -206,7 +194,6 @@
         </figure>
       </section>
 
-      <!-- Financial Snapshot (LQ & YTD) + commentary -->
       <section class="section">
         <h2>Financial Snapshot</h2>
         <div class="cols" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
@@ -246,7 +233,6 @@
         {% endif %}
       </section>
 
-      <!-- Industry + Macro -->
       <section class="section">
         <h2>Industry & Macro</h2>
         <div class="card">
@@ -259,7 +245,7 @@
           <div class="tagrow">
             <span class="pill">Sector ETF: {{ sector_inputs.chosen_sector_etf or "N/A" }}</span>
             {% if technical and technical.rsi_14 is not none %}
-              <span class="pill">RSI(14): {{ num1(technical.rsi_14) }}</span>
+              <span class="pill">RSI(14): {{ '%.1f' % _num(technical.rsi_14) }}</span>
             {% endif %}
           </div>
           {% if commentary and commentary.sector %}<div class="md">{{ commentary.sector | safe }}</div>
@@ -267,7 +253,6 @@
         </div>
       </section>
 
-      <!-- Peers -->
       <section class="section">
         <h2>Peer Group (≤ 6) & Multiples</h2>
         <figure class="card">
@@ -285,19 +270,19 @@
               {% for r in peer_rows or [] %}
               <tr>
                 <td>{{ r["Ticker"] }}</td>
-                <td class="tr">{{ mult(r["EV/S (TTM)"]) }}</td>
-                <td class="tr">{{ mult(r["EV/EBITDA (TTM)"]) }}</td>
-                <td class="tr">{{ pct(r["Dividend Yield %"],2) }}</td>
-                <td class="tr">{{ pct(r["FCF Yield %"],2) }}</td>
+                <td class="tr">{{ r["EV/S (TTM)"] is not none and ('%.2fx' % _num(r["EV/S (TTM)"])) or "—" }}</td>
+                <td class="tr">{{ r["EV/EBITDA (TTM)"] is not none and ('%.2fx' % _num(r["EV/EBITDA (TTM)"])) or "—" }}</td>
+                <td class="tr">{{ r["Dividend Yield %"] is not none and ('%.2f%%' % _num(r["Dividend Yield %"])) or "—" }}</td>
+                <td class="tr">{{ r["FCF Yield %"] is not none and ('%.2f%%' % _num(r["FCF Yield %"])) or "—" }}</td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
           <figcaption class="muted small">
             Subject 5-yr avgs — EV/S:
-            {{ peer_five_year["EV/S 5y Avg"] is not none and ('%.2fx' % (_num(peer_five_year["EV/S 5y Avg"]))) or "—" }},
+            {{ peer_five_year["EV/S 5y Avg"] is not none and ('%.2fx' % _num(peer_five_year["EV/S 5y Avg"])) or "—" }},
             EV/EBITDA:
-            {{ peer_five_year["EV/EBITDA 5y Avg"] is not none and ('%.2fx' % (_num(peer_five_year["EV/EBITDA 5y Avg"]))) or "—" }}.
+            {{ peer_five_year["EV/EBITDA 5y Avg"] is not none and ('%.2fx' % _num(peer_five_year["EV/EBITDA 5y Avg"])) or "—" }}.
           </figcaption>
         </figure>
       </section>
@@ -310,7 +295,6 @@
         </div>
       </section>
       {% endif %}
-
     </article>
   </div>
 
