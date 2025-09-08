@@ -4,7 +4,6 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>{{ ticker }} – Professional Report</title>
-
   <style>
     :root{--bg:#fafafa;--panel:#fff;--ink:#0a0a0a;--muted:#6b7280;--line:#e5e7eb;--accent:#0f172a;--pos:#065f46;--neg:#991b1b}
     *{box-sizing:border-box}
@@ -19,7 +18,6 @@
     .tp-label{color:var(--muted);font-size:12px}
     .tp{font-size:22px;font-weight:700}
     .tp-sub{color:var(--muted);font-size:12px;margin-top:2px}
-
     .layout{display:grid;grid-template-columns:280px 1fr;gap:16px}
     .rail .panel,.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px}
     .rail-h{margin:0 0 8px 0;font-size:14px}
@@ -27,7 +25,6 @@
     .k{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
     .k dt{color:var(--muted);font-size:12px}
     .k dd{margin:0;font-weight:600}
-
     .section{margin-top:16px}
     .lead{margin:0}
     .table{width:100%;border-collapse:collapse}
@@ -45,17 +42,14 @@
     .badge.pos{background:#ecfdf5;color:var(--pos);border:1px solid #d1fae5}
     .badge.neg{background:#fef2f2;color:var(--neg);border:1px solid #fee2e2}
     .foot{margin-top:20px;text-align:center}
-
     .md p{margin:0 0 6px 0}
     .md ul{margin:6px 0 6px 18px}
     .md li{margin:2px 0}
-
     @media (max-width:960px){
       .hero{grid-template-columns:1fr}
       .layout{grid-template-columns:1fr}
     }
   </style>
-
   {% if css_href %}
     <link rel="stylesheet" href="{{ css_href }}">
   {% elif css_inline %}
@@ -74,29 +68,30 @@
       {%- if not s or s in ['—','&mdash;'] -%}{{ none }}
       {%- else -%}
         {%- set s2 = s|replace(',','')|replace('$','')|replace('%','')|replace('x','') -%}
-        {{ s2|float }}
+        {{ s2|float if s2|replace('.','',1).isdigit() else none }}
       {%- endif -%}
     {%- endif -%}
   {%- endmacro %}
 
-  {% macro money0(v) -%}{%- set x = _num(v) -%}{%- if x is not none -%}${{ '%.0f' % x }}{%- else -%}—{%- endif -%}{%- endmacro %}
-  {% macro money2(v) -%}{%- set x = _num(v) -%}{%- if x is not none -%}${{ '%.2f' % x }}{%- else -%}—{%- endif -%}{%- endmacro %}
-  {% macro mult(v)   -%}{%- set x = _num(v) -%}{%- if x is not none -%}{{ '%.2fx' % x }}{%- else -%}—{%- endif -%}{%- endmacro %}
-  {% macro pct(v,d=1) -%}{%- set x = _num(v) -%}{%- if x is not none -%}{{ ('%.' ~ d ~ 'f%%') % x }}{%- else -%}—{%- endif -%}{%- endmacro %}
+  {% macro money0(v) %}{% set x=_num(v) %}{% if x is not none %}${{ '%.0f' % x }}{% else %}—{% endif %}{% endmacro %}
+  {% macro money2(v) %}{% set x=_num(v) %}{% if x is not none %}${{ '%.2f' % x }}{% else %}—{% endif %}{% endmacro %}
+  {% macro mult(v)   %}{% set x=_num(v) %}{% if x is not none %}{{ '%.2fx' % x }}{% else %}—{% endif %}{% endmacro %}
+  {% macro pct(v,d=1)%}{% set x=_num(v) %}{% if x is not none %}{{ ('%.' ~ d ~ 'f%%') % x }}{% else %}—{% endif %}{% endmacro %}
+  {% macro num1(v)   %}{% set x=_num(v) %}{% if x is not none %}{{ '%.1f' % x }}{% else %}—{% endif %}{% endmacro %}
 
-  {# YoY badge: compute inside this macro so we deal with real numbers, not Markup #}
-  {% macro yoy_badge(cur, prev) -%}
-    {%- set c = _num(cur) -%}
-    {%- set p = _num(prev) -%}
+  {% macro yoy_val(cur, prev) -%}
+    {%- set c = _num(cur) -%}{%- set p = _num(prev) -%}
     {%- if c is not none and p is not none and p != 0 -%}
-      {%- set y = (c - p) / p * 100.0 -%}
+      {{ (c - p) / p * 100.0 }}
+    {%- else -%}{{ none }}{%- endif -%}
+  {%- endmacro %}
+  {% macro yoy_badge(cur, prev) -%}
+    {%- set y = yoy_val(cur, prev) -%}
+    {%- if y is not none -%}
       <span class="badge {{ 'pos' if y>0 else 'neg' }}">{{ '%+.1f%%' % y }}</span>
-    {%- else -%}
-      <span class="muted">—</span>
-    {%- endif -%}
+    {%- else -%}<span class="muted">—</span>{%- endif -%}
   {%- endmacro %}
 
-  {# Header metric by label; works with header_map or header_table #}
   {% macro headv(label) -%}
     {%- if header_map is defined and header_map -%}
       {{ header_map.get(label) }}
@@ -109,7 +104,6 @@
     {%- endif -%}
   {%- endmacro %}
 
-  <!-- ===== Header ===== -->
   <header class="hero">
     <div class="brand">
       <div class="firm">Equity Research</div>
@@ -126,7 +120,6 @@
     </div>
   </header>
 
-  <!-- ===== Body with KPI rail ===== -->
   <div class="layout">
     <aside class="rail">
       <div class="panel">
@@ -148,11 +141,12 @@
         <div class="muted small">Data source: FMP. Values in base currency unless noted.</div>
       </div>
     </aside>
-
     <article class="main">
       <section class="section">
         <h2>Company Overview</h2>
-        <p class="lead">{{ profile.description or "No company description available." }}</p>
+        <p class="lead">
+          {{ profile.description or "No company description available." }}
+        </p>
       </section>
 
       <section class="section">
@@ -210,7 +204,6 @@
               </tbody>
             </table>
           </div>
-
           <div class="card">
             <h3>Year-to-Date ({{ fin_snapshot.ytd.year or '—' }})</h3>
             <table class="table tight">
@@ -224,7 +217,6 @@
             </table>
           </div>
         </div>
-
         {% if commentary and commentary.financials %}
           <div class="card note" style="margin-top:12px">
             <h3>LLM Commentary — Financials</h3>
@@ -232,7 +224,6 @@
           </div>
         {% endif %}
       </section>
-
       <section class="section">
         <h2>Industry & Macro</h2>
         <div class="card">
@@ -245,14 +236,13 @@
           <div class="tagrow">
             <span class="pill">Sector ETF: {{ sector_inputs.chosen_sector_etf or "N/A" }}</span>
             {% if technical and technical.rsi_14 is not none %}
-              <span class="pill">RSI(14): {{ '%.1f' % _num(technical.rsi_14) }}</span>
+              <span class="pill">RSI(14): {{ num1(technical.rsi_14) }}</span>
             {% endif %}
           </div>
           {% if commentary and commentary.sector %}<div class="md">{{ commentary.sector | safe }}</div>
           {% else %}<p class="muted">No LLM commentary available.</p>{% endif %}
         </div>
       </section>
-
       <section class="section">
         <h2>Peer Group (≤ 6) & Multiples</h2>
         <figure class="card">
@@ -270,23 +260,22 @@
               {% for r in peer_rows or [] %}
               <tr>
                 <td>{{ r["Ticker"] }}</td>
-                <td class="tr">{{ r["EV/S (TTM)"] is not none and ('%.2fx' % _num(r["EV/S (TTM)"])) or "—" }}</td>
-                <td class="tr">{{ r["EV/EBITDA (TTM)"] is not none and ('%.2fx' % _num(r["EV/EBITDA (TTM)"])) or "—" }}</td>
-                <td class="tr">{{ r["Dividend Yield %"] is not none and ('%.2f%%' % _num(r["Dividend Yield %"])) or "—" }}</td>
-                <td class="tr">{{ r["FCF Yield %"] is not none and ('%.2f%%' % _num(r["FCF Yield %"])) or "—" }}</td>
+                <td class="tr">{{ mult(r["EV/S (TTM)"]) }}</td>
+                <td class="tr">{{ mult(r["EV/EBITDA (TTM)"]) }}</td>
+                <td class="tr">{{ pct(r["Dividend Yield %"],2) }}</td>
+                <td class="tr">{{ pct(r["FCF Yield %"],2) }}</td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
           <figcaption class="muted small">
             Subject 5-yr avgs — EV/S:
-            {{ peer_five_year["EV/S 5y Avg"] is not none and ('%.2fx' % _num(peer_five_year["EV/S 5y Avg"])) or "—" }},
+            {{ peer_five_year["EV/S 5y Avg"] is not none and ('%.2fx' % (_num(peer_five_year["EV/S 5y Avg"]))) or "—" }},
             EV/EBITDA:
-            {{ peer_five_year["EV/EBITDA 5y Avg"] is not none and ('%.2fx' % _num(peer_five_year["EV/EBITDA 5y Avg"])) or "—" }}.
+            {{ peer_five_year["EV/EBITDA 5y Avg"] is not none and ('%.2fx' % (_num(peer_five_year["EV/EBITDA 5y Avg"]))) or "—" }}.
           </figcaption>
         </figure>
       </section>
-
       {% if commentary and commentary.wrap %}
       <section class="section">
         <div class="card note">
@@ -297,7 +286,6 @@
       {% endif %}
     </article>
   </div>
-
   <footer class="foot muted small">
     Generated {{ as_of }} · {{ ticker }} · Source: Financial Modeling Prep (FMP). This is not investment advice.
   </footer>
