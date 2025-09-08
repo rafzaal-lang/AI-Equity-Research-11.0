@@ -66,51 +66,23 @@ def _robust_peer_pe(peers: List[Dict[str, Any]], min_n: int = 3) -> Optional[flo
     mid = vals[k1:k2] or vals
     return sum(mid) / len(mid)
 
-# -------- fallback helpers (used if transcripts missing) --------
-def _bulletize_text(text: str, limit: int = 6) -> List[str]:
-    if not text:
-        return []
-    lines = [ln.strip() for ln in str(text).splitlines() if ln.strip()]
-    if len(lines) <= 1:
-        parts = [p.strip() for p in lines[0].replace("•", ". ").split(".") if p.strip()]
-        lines = parts
-    return [f"- {ln}" for ln in lines[:limit]]
+def _has_meaningful_values(x: Any) -> bool:
+    """True if dict/obj contains any non-empty, non-None values."""
+    if not x:
+        return False
+    if isinstance(x, dict):
+        return any(v not in (None, "", [], {}, ()) for v in x.values())
+    return True
 
-def _fallback_metrics_bullets(fundamentals: Dict[str, Any], dcf: Dict[str, Any]) -> List[str]:
-    rep     = (fundamentals or {}).get("reported") or {}
-    margins = (fundamentals or {}).get("margins")  or {}
-    ratios  = (fundamentals or {}).get("ratios")   or {}
-
-    bullets: List[str] = []
-    rev = rep.get("revenue")
-    if rev is not None:
-        bullets.append(f"Scale: revenue {_fmt_money(rev)} TTM.")
-    gm = margins.get("gross_margin"); om = margins.get("operating_margin"); nm = margins.get("net_margin")
-    if gm is not None and om is not None and nm is not None:
-        bullets.append(f"Margins: {_fmt_pct(gm)} gross, {_fmt_pct(om)} operating, {_fmt_pct(nm)} net.")
-    roe = ratios.get("roe")
-    if roe is not None:
-        bullets.append(f"Capital efficiency: ROE {_fmt_pct(roe)}.")
-    dte = ratios.get("debt_to_equity")
-    if dte is not None:
-        bullets.append(f"Leverage: D/E {_fmt_ratio(dte,2)}×.")
-    if isinstance(dcf, dict) and dcf:
-        ev = dcf.get("enterprise_value"); eqv = dcf.get("equity_value"); tvp = dcf.get("terminal_value_pct")
-        if ev is not None or eqv is not None:
-            bullets.append(f"DCF: EV {_fmt_money(ev)}; equity {_fmt_money(eqv)}.")
-        if tvp is not None:
-            bullets.append(f"Terminal value share of EV: {_fmt_pct(tvp, already_pct=True)}.")
-    return [f"- {b}" for b in bullets]
-
-# ---------------- unified compose (supports both call styles) ----------------
+# ---------------- compose ----------------
 def compose(symbol: Any, as_of: Optional[str] = None, data: Optional[Dict[str, Any]] = None, **kwargs) -> str:
     """
+    Unified composer:
+
     - New style: compose(payload_dict)
     - Legacy style: compose(symbol_str, as_of=None, data=None, **kwargs)
-
-    Returns clean Markdown (never echoes the raw dict).
-    Includes graceful fallback when transcripts aren’t provided.
     """
+    # Detect call style
     if isinstance(symbol, dict):
         payload: Dict[str, Any] = dict(symbol)
         sym = str(payload.get("symbol") or "—").upper()
@@ -120,8 +92,10 @@ def compose(symbol: Any, as_of: Optional[str] = None, data: Optional[Dict[str, A
         sym = (str(symbol) if symbol is not None else "—").upper()
         as_of_final = as_of or date.today().isoformat()
         ctx: Dict[str, Any] = {}
-        if data:   ctx.update(data)
-        if kwargs: ctx.update(kwargs)
+        if data:
+            ctx.update(data)
+        if kwargs:
+            ctx.update(kwargs)
         ctx.setdefault("symbol", sym)
         ctx.setdefault("as_of", as_of_final)
 
@@ -144,7 +118,7 @@ def compose(symbol: Any, as_of: Optional[str] = None, data: Optional[Dict[str, A
     dcf_ev = dcf.get("enterprise_value")
     dcf_eq = dcf.get("equity_value")
     dcf_tv = dcf.get("terminal_value")
-    dcf_tv_pct = dcf.get("terminal_value_pct")
+    dcf_tv_pct = dcf.get("terminal_value_pct")  # ratio (e.g., 0.70)
     a = dcf.get("assumptions") or {}
     dcf_rg, dcf_dr, dcf_tg, dcf_years = a.get("revenue_growth"), a.get("discount_rate"), a.get("terminal_growth"), a.get("projection_years")
 
@@ -156,6 +130,7 @@ def compose(symbol: Any, as_of: Optional[str] = None, data: Optional[Dict[str, A
 
     md: List[str] = [f"# {sym} — Equity Research Note *(as of {as_of_final})*", ""]
 
+    # Snapshot
     if any([mc, ev, pe, fcf_yield, peer_pe_robust]):
         md.append("## Snapshot")
         if mc is not None: md.append(f"- **Market Cap:** {_fmt_money(mc)}")
@@ -165,6 +140,7 @@ def compose(symbol: Any, as_of: Optional[str] = None, data: Optional[Dict[str, A
         if fcf_yield is not None: md.append(f"- **FCF Yield:** {_fmt_pct(fcf_yield)}")
         md.append("")
 
+    # Analyst View
     if ai_rating or ai_targets:
         md.append("## Analyst View")
         if ai_rating: md.append(f"- **Rating:** {ai_rating}")
@@ -173,10 +149,12 @@ def compose(symbol: Any, as_of: Optional[str] = None, data: Optional[Dict[str, A
             md.append(f"- **Target Range (EV):** Low {low} · Base {base} · High {high}")
         md.append("")
 
+    # Executive Summary (if provided upstream via ai_analysis)
     if ai_exec:
         md.append("## Executive Summary")
         md.append(ai_exec.strip()); md.append("")
 
+    # Key Insights (bucketed)
     if isinstance(ai_insights, list) and ai_insights:
         md.append("## Key Insights")
         buckets: Dict[str, List[str]] = {"strength": [], "opportunity": [], "weakness": [], "threat": []}
@@ -190,16 +168,19 @@ def compose(symbol: Any, as_of: Optional[str] = None, data: Optional[Dict[str, A
                 md.extend(f"- {t}" for t in items)
         md.append("")
 
+    # DCF Summary
     if any([dcf_ev, dcf_eq, dcf_tv, dcf_tv_pct, a]):
         md.append("## DCF Summary")
         if any([dcf_ev, dcf_eq]): md.append(f"- **Enterprise Value:** {_fmt_money(dcf_ev)}  ·  **Equity Value:** {_fmt_money(dcf_eq)}")
         if dcf_tv is not None or dcf_tv_pct is not None:
-            md.append(f"- **Terminal Value:** {_fmt_money(dcf_tv)}  ({_fmt_pct(dcf_tv_pct, already_pct=True)} of EV)")
+            # dcf_tv_pct is a ratio; convert to %
+            md.append(f"- **Terminal Value:** {_fmt_money(dcf_tv)}  ({_fmt_pct(dcf_tv_pct)} of EV)")
         if any([dcf_rg, dcf_dr, dcf_tg, dcf_years]):
             yrs = _fmt_ratio(dcf_years, 0) if dcf_years is not None else "—"
             md.append(f"- **Assumptions:** Rev growth {_fmt_pct(dcf_rg)} · Discount {_fmt_pct(dcf_dr)} · Terminal {_fmt_pct(dcf_tg)} · Years {yrs}")
         md.append("")
 
+    # Quarterly Update
     q = ctx.get("quarter") or {}
     if isinstance(q, dict) and any(q.get(k) is not None for k in ("period","revenue_yoy","eps_yoy","op_income_yoy","notes")):
         md.append("## Quarterly Update")
@@ -210,10 +191,12 @@ def compose(symbol: Any, as_of: Optional[str] = None, data: Optional[Dict[str, A
         if q.get("notes"): md.append(f"- {_fmt_plain(q.get('notes'))}")
         md.append("")
 
+    # Highlights
     highlights = ctx.get("highlights") or []
     if isinstance(highlights, list) and highlights:
         md.append("## Highlights"); md.extend(f"- {b}" for b in highlights); md.append("")
 
+    # Momentum Snapshot (legacy compatibility)
     momentum = ctx.get("momentum") or {}
     if isinstance(momentum, dict) and momentum:
         m5d  = _fmt_pct(momentum.get("m5d")); m3m = _fmt_pct(momentum.get("m3m")); m6m = _fmt_pct(momentum.get("m6m"))
@@ -223,10 +206,19 @@ def compose(symbol: Any, as_of: Optional[str] = None, data: Optional[Dict[str, A
         md.append(f"- **Breadth:** {b50} above 50DMA · {b200} above 200DMA")
         md.append("")
 
+    # Valuation Notes (only if meaningful; render nicely)
     valuation_note = ctx.get("valuation")
-    if valuation_note:
-        md.append("## Valuation Notes"); md.append(str(valuation_note).strip()); md.append("")
+    if _has_meaningful_values(valuation_note):
+        md.append("## Valuation Notes")
+        if isinstance(valuation_note, dict):
+            for k, v in valuation_note.items():
+                if v not in (None, "", [], {}, ()):
+                    md.append(f"- **{k.replace('_',' ').title()}:** {v}")
+        else:
+            md.append(str(valuation_note).strip())
+        md.append("")
 
+    # Peer Snapshot
     if isinstance(peers, list) and peers:
         md.append("## Peer Snapshot")
         md.append("| Ticker | P/E | EV/EBITDA | P/S | Mkt Cap |")
@@ -236,29 +228,55 @@ def compose(symbol: Any, as_of: Optional[str] = None, data: Optional[Dict[str, A
             md.append(f"| {p.get('ticker')} | {_fmt_ratio(p.get('pe'))} | {_fmt_ratio(p.get('ev_ebitda'))} | {_fmt_ratio(p.get('ps'))} | {_fmt_money(p.get('market_cap'))} |")
         md.append("")
 
+    # Transcripts or fallback summary
     transcripts = ctx.get("transcripts")
     if transcripts:
         md.append("## Transcript Q&A Notes"); md.append(str(transcripts).strip()); md.append("")
     else:
-        notes = (ctx.get("quarter") or {}).get("notes")
+        # Fallback chain: quarter.notes -> ai_analysis.executive_summary -> basic metrics bullets
         fallback_lines: List[str] = []
+        notes = (ctx.get("quarter") or {}).get("notes")
         if isinstance(notes, list) and notes:
             fallback_lines = [f"- {_fmt_plain(n)}" for n in notes if _fmt_plain(n)]
         elif isinstance(notes, str) and notes.strip():
-            fallback_lines = _bulletize_text(notes)
+            lines = [ln.strip() for ln in notes.splitlines() if ln.strip()]
+            if len(lines) <= 1:
+                parts = [p.strip() for p in notes.replace("•", ". ").split(".") if p.strip()]
+                lines = parts
+            fallback_lines = [f"- {ln}" for ln in lines[:6]]
+
         if not fallback_lines and ai_exec:
-            fallback_lines = _bulletize_text(str(ai_exec), limit=5)
+            lines = [ln.strip() for ln in str(ai_exec).splitlines() if ln.strip()]
+            if len(lines) <= 1:
+                parts = [p.strip() for p in str(ai_exec).replace("•", ". ").split(".") if p.strip()]
+                lines = parts
+            fallback_lines = [f"- {ln}" for ln in lines[:5]]
+
         if not fallback_lines:
-            fallback_lines = _fallback_metrics_bullets(fundamentals, dcf)
+            rep     = (fundamentals or {}).get("reported") or {}
+            margins = (fundamentals or {}).get("margins")  or {}
+            ratios  = (fundamentals or {}).get("ratios")   or {}
+            bullets = []
+            if rep.get("revenue") is not None: bullets.append(f"Scale: revenue {_fmt_money(rep.get('revenue'))} TTM.")
+            if all(margins.get(k) is not None for k in ("gross_margin","operating_margin","net_margin")):
+                bullets.append(f"Margins: {_fmt_pct(margins['gross_margin'])} gross, {_fmt_pct(margins['operating_margin'])} operating, {_fmt_pct(margins['net_margin'])} net.")
+            if ratios.get("roe") is not None: bullets.append(f"Capital efficiency: ROE {_fmt_pct(ratios.get('roe'))}.")
+            if ratios.get("debt_to_equity") is not None: bullets.append(f"Leverage: D/E {_fmt_ratio(ratios.get('debt_to_equity'),2)}×.")
+            if dcf_ev is not None or dcf_eq is not None: bullets.append(f"DCF: EV {_fmt_money(dcf_ev)}; equity {_fmt_money(dcf_eq)}.")
+            if dcf_tv_pct is not None: bullets.append(f"Terminal value share of EV: {_fmt_pct(dcf_tv_pct)}.")
+            fallback_lines = [f"- {b}" for b in bullets]
+
         if fallback_lines:
             md.append("## Earnings Summary (fallback)")
             md.extend(fallback_lines)
             md.append("")
 
+    # Risks
     risks = ctx.get("risks") or []
     if isinstance(risks, list) and risks:
         md.append("## Risks"); md.extend(f"- {r}" for r in risks); md.append("")
 
+    # Citations
     citations = ctx.get("citations") or []
     if isinstance(citations, list) and citations:
         md.append("## Citations")
