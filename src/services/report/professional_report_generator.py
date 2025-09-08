@@ -7,6 +7,27 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 
+--- a/src/services/report/professional_report_generator.py
++++ b/src/services/report/professional_report_generator.py
++from __future__ import annotations
+ import os
+ import uuid
+ import logging
+ from datetime import datetime
+-from typing import Dict, Any, List, Optional
++from typing import Dict, Any, List, Optional, Tuple
+ from pathlib import Path
+ from jinja2 import Environment, FileSystemLoader
+-import matplotlib.pyplot as plt
++import matplotlib
++matplotlib.use("Agg")  # Headless backend for servers (must come BEFORE importing pyplot)
++import matplotlib.pyplot as plt
+ import pandas as pd
+ import seaborn as sns
+ from email.mime.multipart import MIMEMultipart
+ from email.mime.text import MIMEText
+ from email.mime.image import MIMEImage
+
 import matplotlib.pyplot as plt
 import pandas as pd
 
@@ -201,3 +222,4 @@ class ProfessionalReportGenerator:
 
 
 professional_report_generator = ProfessionalReportGenerator()
+
