@@ -8,12 +8,15 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 from fastapi import FastAPI, Form, Query, HTTPException
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from jinja2 import Environment, BaseLoader, select_autoescape
 
-from src.services.report.professional_report_generator import (
-    professional_report_generator as progen
-)
+# OPTIONAL local generator (only used as a fallback if API base isn't set)
+try:
+    # New FMP-only generator we added; provides render_pro_report_html()
+    from src.services.report.professional_report_generator import render_pro_report_html  # type: ignore
+except Exception:
+    render_pro_report_html = None  # fallback only
 
 app = FastAPI(title="Equity Research — Minimal UI")
 
@@ -35,7 +38,10 @@ DEFAULT_TICKER = (os.getenv("DEFAULT_TICKER", "AAPL") or "AAPL").strip() or "AAP
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-# Imports
+# If you're running the API as a separate Render service (Option B), set this on the UI service.
+REPORTS_API_BASE_URL = os.getenv("REPORTS_API_BASE_URL", "").rstrip("/")
+
+# Imports used for Markdown report
 try:
     from src.services.financial_modeler import build_model
     from src.services.report.composer import compose as compose_report
@@ -232,7 +238,7 @@ def _clean_composer_markdown(md_core: str, ticker: str) -> str:
         s = header + s.lstrip()
     return s
 
-# ---------- Pro-report helpers ----------
+# ---------- Pro-report helpers (legacy/local only) ----------
 def _data_uri(path: pathlib.Path) -> Optional[str]:
     try:
         b = path.read_bytes()
@@ -245,25 +251,6 @@ def _fmt2(x):
         return float(x)
     except Exception:
         return None
-
-def _build_sensitivity_grid_from_model(model: Dict[str, Any]) -> Dict[str, Any]:
-    sa = ((model.get("dcf_valuation") or {}).get("sensitivity_analysis")) or {}
-    if not isinstance(sa, dict) or not sa:
-        return {}
-    import re
-    wset, tset, cell = set(), set(), {}
-    pat = re.compile(r"wacc_([\d.]+)%_tg_([\d.]+)%")
-    for k, v in sa.items():
-        m = pat.search(str(k))
-        if not m: 
-            continue
-        w = float(m.group(1)); t = float(m.group(2))
-        wset.add(w); tset.add(t); cell[(t, w)] = v
-    if not wset or not tset:
-        return {}
-    xs = sorted(wset); ys = sorted(tset)
-    z = [[cell.get((y, x), None) for x in xs] for y in ys]
-    return {"x_labels": [f"{x:.1f}%" for x in xs], "y_labels": [f"{y:.1f}%" for y in ys], "z": z}
 
 def _get_peer_comps_for_template(tickers: List[str]) -> List[Dict[str, Any]]:
     peers = []
@@ -286,7 +273,6 @@ def _get_peer_comps_for_template(tickers: List[str]) -> List[Dict[str, Any]]:
     return peers
 
 def _company_meta(ticker: str) -> Dict[str, Any]:
-    """Use FMP profile name/logo when available; fallback to Clearbit or placeholder."""
     sym = ticker.upper()
     name, logo = sym, None
     try:
@@ -296,9 +282,27 @@ def _company_meta(ticker: str) -> Dict[str, Any]:
     except Exception:
         pass
     if not logo:
-        # Clearbit fallback (may not exist for all tickers)
         logo = f"https://logo.clearbit.com/{sym.lower()}.com"
     return {"name": name, "symbol": sym, "logo_url": logo}
+
+def _build_sensitivity_grid_from_model(model: Dict[str, Any]) -> Dict[str, Any]:
+    sa = ((model.get("dcf_valuation") or {}).get("sensitivity_analysis")) or {}
+    if not isinstance(sa, dict) or not sa:
+        return {}
+    import re
+    wset, tset, cell = set(), set(), {}
+    pat = re.compile(r"wacc_([\d.]+)%_tg_([\d.]+)%")
+    for k, v in sa.items():
+        m = pat.search(str(k))
+        if not m:
+            continue
+        w = float(m.group(1)); t = float(m.group(2))
+        wset.add(w); tset.add(t); cell[(t, w)] = v
+    if not wset or not tset:
+        return {}
+    xs = sorted(wset); ys = sorted(tset)
+    z = [[cell.get((y, x), None) for x in xs] for y in ys]
+    return {"x_labels": [f"{x:.1f}%" for x in xs], "y_labels": [f"{y:.1f}%" for y in ys], "z": z}
 
 def _to_template_payload(ticker: str, model: Dict[str, Any]) -> Dict[str, Any]:
     f = model.get("core_financials", {}) or model.get("fundamentals", {}) or {}
@@ -316,7 +320,6 @@ def _to_template_payload(ticker: str, model: Dict[str, Any]) -> Dict[str, Any]:
         ass["years_stage1"] = ass["projection_years"]
     ass.setdefault("years_stage2", 0)
 
-    # Build exec summary text
     exec_summary = ""
     if rep.get("revenue") is not None:
         try:
@@ -331,8 +334,8 @@ def _to_template_payload(ticker: str, model: Dict[str, Any]) -> Dict[str, Any]:
             exec_summary = f"{ticker.upper()} summary unavailable."
 
     financial_summary = {
-        "periods": [],  # optional time-series (charts will still render gracefully if empty)
-        "profitability": {},   # (template guards against None/empty)
+        "periods": [],
+        "profitability": {},
         "liquidity": {},
         "valuation": {
             "ev": dcf.get("enterprise_value"),
@@ -566,7 +569,6 @@ def post_report(ticker: str = Form(...)):
     try:
         md = _build_report_markdown(ticker)
         import markdown as md_parser
-        # Use widely available extensions only
         html_content = md_parser.markdown(md, extensions=["extra", "tables"])
         result_html = f"""
         <div class="panel">
@@ -589,74 +591,47 @@ def download_report_md(ticker: str = Query(...)):
     return PlainTextResponse(md, headers={"Content-Disposition": f"attachment; filename={ticker}_report.md"})
 
 # ---- Pro Report (HTML) ----
-@app.get("/pro-report", response_class=HTMLResponse)
+@app.get("/pro-report")
 def pro_report(ticker: Optional[str] = Query(default=None)):
+    """
+    Option B (preferred): redirect to the dedicated API service's HTML endpoint.
+    Fallback: if REPORTS_API_BASE_URL isn't set but local generator is available, render locally.
+    """
     sym = (ticker or DEFAULT_TICKER).strip().upper()
-    try:
-        model = build_model(sym, force_refresh=False)
-        if isinstance(model, dict) and "error" in model:
-            raise HTTPException(status_code=400, detail=f"Model error: {model['error']}")
 
-        # Build template payload
-        payload = _to_template_payload(sym, model)
+    # Preferred: redirect to API service (ensures CSS/assets resolve correctly)
+    if REPORTS_API_BASE_URL:
+        target = f"{REPORTS_API_BASE_URL}/v1/pro-report/{sym}"
+        return RedirectResponse(url=target, status_code=307)
 
-        # Build charts first, convert to data URIs for web
-        charts = progen._create_charts(payload.get("financial_summary", {}) or {})
-        chart_srcs: Dict[str, str] = {}
-        for cid, p in (charts or {}).items():
-            uri = _data_uri(pathlib.Path(p))
-            if uri:
-                chart_srcs[cid] = uri
-        if chart_srcs:
-            payload["chart_srcs"] = chart_srcs  # template will prefer chart_srcs.* over cid:*
+    # Fallback: attempt local generation if the generator function is available
+    if callable(render_pro_report_html):
+        try:
+            path = render_pro_report_html(sym)
+            html = pathlib.Path(path).read_text(encoding="utf-8")
+            return HTMLResponse(html, status_code=200)
+        except Exception as e:
+            return _html_error(f"Local Pro Report error: {type(e).__name__}: {e}")
 
-        # Generate HTML via Jinja (adds generation_date, report_id, version)
-        html = progen.generate_html_report(payload)
-
-        page = f"""
-        <div class="panel">
-          <h2>{sym} Pro Report</h2>
-          <div style="margin-bottom:12px; display:flex; gap:8px; flex-wrap:wrap;">
-            <a href="/pro-report.eml?ticker={sym}" class="btn" style="text-decoration:none;">Download EML</a>
-          </div>
-          <div style="border:1px solid var(--line);padding:18px;border-radius:12px;">{html}</div>
-        </div>
-        """
-        return HTMLResponse(render(page))
-    except HTTPException:
-        raise
-    except Exception as e:
-        return _html_error(f"Pro report error: {type(e).__name__}: {e}")
+    # Neither API base set nor local generator available
+    return _html_error(
+        "Pro Report not configured. Set REPORTS_API_BASE_URL on the UI service to your API host "
+        "(e.g., https://<reports-api>.onrender.com).", status=501
+    )
 
 # ---- Pro Report (EML) ----
 @app.get("/pro-report.eml", response_class=PlainTextResponse)
 def pro_report_eml(ticker: Optional[str] = Query(default=None)):
+    """
+    The legacy EML packaging relied on an older generator module.
+    To keep the UI stable, we return a clear message unless you reintroduce a local packager.
+    """
     sym = (ticker or DEFAULT_TICKER).strip().upper()
-    try:
-        model = build_model(sym, force_refresh=False)
-        if isinstance(model, dict) and "error" in model:
-            raise HTTPException(status_code=400, detail=f"Model error: {model['error']}")
-
-        # Build template payload WITHOUT chart_srcs so the template uses cid:*
-        payload = _to_template_payload(sym, model)
-        html_content = progen.generate_html_report(payload)
-
-        # Create charts and package with CIDs
-        charts = progen._create_charts(payload.get("financial_summary", {}) or {})
-        eml_path = progen.package_report_as_eml(
-            html_content, charts or {},
-            subject=f"Equity Research Report: {sym}",
-            to_email="<recipient>", from_email="<sender>"
-        )
-
-        return PlainTextResponse(
-            f"EML saved to: {eml_path}",
-            headers={"Content-Disposition": f"attachment; filename={sym}_report.eml"}
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        return PlainTextResponse(f"Pro report EML error: {type(e).__name__}: {e}", status_code=500)
+    return PlainTextResponse(
+        f"EML packaging not enabled in this UI build for {sym}. "
+        f"Use the HTML Pro Report via /pro-report or set REPORTS_API_BASE_URL to your API.",
+        status_code=501
+    )
 
 @app.get("/debug/env", response_class=PlainTextResponse)
 def debug_env():
@@ -666,6 +641,7 @@ def debug_env():
         ("OPENAI_MODEL", OPENAI_MODEL),
         ("BASE_CURRENCY", os.getenv("BASE_CURRENCY", "")),
         ("DEFAULT_TICKER", DEFAULT_TICKER),
+        ("REPORTS_API_BASE_URL", REPORTS_API_BASE_URL or "(not set)"),
     ]
     lines = [f"{k}={'SET' if v else 'MISSING'}" if isinstance(v, bool) else f"{k}={v}" for k, v in keys]
     return PlainTextResponse("\n".join(lines))
