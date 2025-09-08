@@ -1,0 +1,27 @@
+# Dockerfile.ui — fixed for Render build
+# Root cause: python:3.11-slim moved to Debian 'trixie' and apt package names shifted.
+# Fix: pin to bookworm and avoid OS libs for lxml; only install curl for healthcheck.
+
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+# Only need curl for healthcheck; lxml uses prebuilt wheels (no OS libs required)
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python deps first (cache-friendly)
+COPY requirements.txt ./
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+# Copy the rest of your repo (expects src/, ingestion/, ui_minimal.py, etc.)
+COPY . .
+
+# Expose the port and run the UI
+ENV PYTHONPATH=/app
+EXPOSE 8090
+CMD ["uvicorn", "ui_minimal:app", "--host", "0.0.0.0", "--port",  "8090"]

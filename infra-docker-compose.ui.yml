@@ -1,0 +1,46 @@
+# infra/docker-compose.ui.yml — overlay that adds the UI + optional ingest job
+services:
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    container_name: equity_ui
+    depends_on:
+      - qdrant
+      - redis
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      FMP_API_KEY: ${FMP_API_KEY}
+      SEC_USER_AGENT: ${SEC_USER_AGENT}
+      QDRANT_URL: http://qdrant:6333
+      REDIS_URL: redis://redis:6379/0
+      EMBED_MODEL: ${EMBED_MODEL:-text-embedding-3-large}
+      EMBED_DIM: ${EMBED_DIM:-3072}
+      BASE_CURRENCY: ${BASE_CURRENCY:-USD}
+    ports:
+      - "8090:8090"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  # One-off job to ingest a ticker's latest filings into Qdrant
+  ingest:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    depends_on:
+      - qdrant
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      SEC_USER_AGENT: ${SEC_USER_AGENT}
+      QDRANT_URL: http://qdrant:6333
+      EMBED_MODEL: ${EMBED_MODEL:-text-embedding-3-large}
+    entrypoint: >
+      python -c "from ingestion.edgar_ingest_minimal import ingest_ticker; import os;
+      t=os.environ.get('TICKER','AAPL');
+      ingest_ticker(t, ['10-K','10-Q'], 1)"
+    # no ports; run on demand:
+    #   TICKER=MSFT docker compose -f infra/docker-compose.yml -f infra/docker-compose.ui.yml run --rm ingest
