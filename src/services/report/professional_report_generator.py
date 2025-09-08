@@ -74,12 +74,14 @@ ROOT_DIR, TEMPLATES_DIR, STATIC_DIR, STATIC_URL_PREFIX = _resolve_paths()
 try:
     import markdown as _md
     def _md_to_html(txt: Optional[str]) -> str:
-        if not txt: return ""
+        if not txt:
+            return ""
         return _md.markdown(txt, extensions=["extra", "sane_lists", "tables"])
 except Exception:
     _md = None
     def _md_to_html(txt: Optional[str]) -> str:
-        if not txt: return ""
+        if not txt:
+            return ""
         s = txt.replace("**", "")
         s = s.replace("\r\n", "\n").strip()
         lines = [ln.strip() for ln in s.split("\n") if ln.strip()]
@@ -755,6 +757,8 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         {"label": "EV/S (TTM)", "value": multiples.get("ev_s")},
         {"label": "EV/EBITDA (TTM)", "value": multiples.get("ev_ebitda")},
     ]
+    # NEW: provide a header_map to support templates that look up single values by label
+    header_map = {row["label"]: row["value"] for row in header_table}
 
     fin_snapshot = {"quarter": fundamentals["quarter"], "ytd": fundamentals["ytd"], "ttm": fundamentals["ttm"]}
 
@@ -773,6 +777,7 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         "ticker": t,
         "profile": profile,
         "header_table": header_table,
+        "header_map": header_map,  # compatibility convenience
         "two_year": fundamentals["annual_two_years_table"],
         "estimates": estimates,
         "fin_snapshot": fin_snapshot,
@@ -886,4 +891,3 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
-
