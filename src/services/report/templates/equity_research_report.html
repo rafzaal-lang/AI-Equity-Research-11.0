@@ -3,28 +3,34 @@
 {% block title %}{{ (company.name or "—") }} ({{ (company.symbol or "—") }}) - Equity Research Report{% endblock %}
 
 {% block report_title %}
-  {% if company.logo_url %}<img src="{{ company.logo_url }}" alt="{{ company.name }} Logo" style="max-height: 80px; margin-bottom: 10px;">{% endif %}<br>
+  {% if company.logo_url %}
+    <img src="{{ company.logo_url }}" alt="{{ company.name }} Logo" style="max-height: 80px; margin-bottom: 10px;">
+  {% endif %}<br>
   {{ (company.name or "—") }} ({{ (company.symbol or "—") }})
 {% endblock %}
 
 {% block content %}
 
-  {# ---------- helpers / fallbacks ---------- #}
+  {# ---------- helpers / fallbacks & macros ---------- #}
+  {% macro fmt2(x) -%}
+    {%- if x is not none -%}{{ "{:.2f}".format(x) }}{%- else -%}—{%- endif -%}
+  {%- endmacro %}
+
+  {% macro pct2(x) -%}
+    {%- if x is not none -%}{{ "{:.2f}%".format(x * 100) }}{%- else -%}—{%- endif -%}
+  {%- endmacro %}
+
   {% set dcf = dcf_valuation or {} %}
   {% set A = dcf.assumptions or {} %}
-  {# WACC fallback: prefer enhanced key, else simple_dcf's discount_rate #}
+  {# fallbacks between enhanced and simple DCF #}
   {% set wacc = (A.wacc if A.wacc is not none else A.discount_rate) %}
-  {# Terminal growth fallback #}
   {% set g_terminal = (A.g_terminal if A.g_terminal is not none else A.terminal_growth) %}
-  {# Stage1 growth fallback (or use simple revenue_growth) #}
   {% set g1 = (A.g1 if A.g1 is not none else A.revenue_growth) %}
-  {# Stage2 growth may not exist in simple model #}
   {% set g2 = A.g2 %}
-  {# Years mapping: enhanced vs simple projection_years #}
   {% set years_stage1 = (A.years_stage1 if A.years_stage1 is not none else A.projection_years) %}
   {% set years_stage2 = A.years_stage2 %}
 
-  {# Chart source resolver: prefer inline data URIs in chart_srcs.*, else use CID for EML packaging #}
+  {# chart sources: inline data URIs (chart_srcs) or CID (EML) #}
   {% set prof_src = (chart_srcs.profitability_chart if chart_srcs and chart_srcs.profitability_chart else 'cid:profitability_chart') %}
   {% set liq_src  = (chart_srcs.liquidity_chart     if chart_srcs and chart_srcs.liquidity_chart     else 'cid:liquidity_chart') %}
   {% set sens_src = (chart_srcs.dcf_sensitivity_chart if chart_srcs and chart_srcs.dcf_sensitivity_chart else 'cid:dcf_sensitivity_chart') %}
@@ -49,10 +55,7 @@
       <h4>Key Risks</h4>
       <ul>
         {% for risk in key_risks %}
-          <li>
-            {% if risk.title %}<strong>{{ risk.title }}:</strong> {% endif %}
-            {{ risk.description or "-" }}
-          </li>
+          <li>{% if risk.title %}<strong>{{ risk.title }}:</strong> {% endif %}{{ risk.description or "—" }}</li>
         {% endfor %}
       </ul>
     {% endif %}
@@ -82,13 +85,7 @@
             <tr>
               <td>{{ metric }}</td>
               {% for value in (values or []) %}
-                <td>
-                  {% if value is not none %}
-                    {{ "%.2f"|format(value) }}
-                  {% else %}
-                    N/A
-                  {% endif %}
-                </td>
+                <td>{% if value is not none %}{{ "{:.2f}".format(value) }}{% else %}N/A{% endif %}</td>
               {% endfor %}
             </tr>
           {% endfor %}
@@ -117,13 +114,7 @@
             <tr>
               <td>{{ metric }}</td>
               {% for value in (values or []) %}
-                <td>
-                  {% if value is not none %}
-                    {{ "%.2f"|format(value) }}
-                  {% else %}
-                    N/A
-                  {% endif %}
-                </td>
+                <td>{% if value is not none %}{{ "{:.2f}".format(value) }}{% else %}N/A{% endif %}</td>
               {% endfor %}
             </tr>
           {% endfor %}
@@ -141,7 +132,7 @@
     <h3>3.1 Discounted Cash Flow (DCF) Analysis</h3>
     <p>
       {% if dcf.fair_value_per_share is not none %}
-        Our DCF analysis suggests a fair value of <strong>${{ dcf.fair_value_per_share|round(2) }}</strong> per share.
+        Our DCF analysis suggests a fair value of <strong>${{ "{:.2f}".format(dcf.fair_value_per_share) }}</strong> per share.
       {% else %}
         Our DCF analysis provides enterprise/equity value estimates; per-share fair value is unavailable.
       {% endif %}
@@ -149,10 +140,10 @@
 
     <h4>Key Assumptions</h4>
     <ul>
-      <li>WACC: {% if wacc is not none %}{{ (wacc * 100)|round(2) }}%{% else %}—{% endif %}</li>
-      <li>Terminal Growth Rate: {% if g_terminal is not none %}{{ (g_terminal * 100)|round(2) }}%{% else %}—{% endif %}</li>
-      <li>Stage 1 Growth{% if years_stage1 %} ({{ years_stage1 }} years){% endif %}: {% if g1 is not none %}{{ (g1 * 100)|round(2) }}%{% else %}—{% endif %}</li>
-      <li>Stage 2 Growth{% if years_stage2 %} ({{ years_stage2 }} years){% endif %}: {% if g2 is not none %}{{ (g2 * 100)|round(2) }}%{% else %}—{% endif %}</li>
+      <li>WACC: {% if wacc is not none %}{{ "{:.2f}%".format(wacc * 100) }}{% else %}—{% endif %}</li>
+      <li>Terminal Growth Rate: {% if g_terminal is not none %}{{ "{:.2f}%".format(g_terminal * 100) }}{% else %}—{% endif %}</li>
+      <li>Stage 1 Growth{% if years_stage1 %} ({{ years_stage1 }}){% endif %}: {% if g1 is not none %}{{ "{:.2f}%".format(g1 * 100) }}{% else %}—{% endif %}</li>
+      <li>Stage 2 Growth{% if years_stage2 %} ({{ years_stage2 }}){% endif %}: {% if g2 is not none %}{{ "{:.2f}%".format(g2 * 100) }}{% else %}—{% endif %}</li>
     </ul>
 
     {% if chart_srcs or dcf_sensitivity_chart %}
@@ -183,9 +174,9 @@
             {% set sym = comp.symbol if comp.symbol is not none else comp.ticker %}
             <tr>
               <td>{{ sym or "—" }}</td>
-              <td>{% if comp.pe is not none %}{{ "%.2f"|format(comp.pe) }}{% else %}—{% endif %}</td>
-              <td>{% if comp.ps is not none %}{{ "%.2f"|format(comp.ps) }}{% else %}—{% endif %}</td>
-              <td>{% if comp.ev_ebitda is not none %}{{ "%.2f"|format(comp.ev_ebitda) }}{% else %}—{% endif %}</td>
+              <td>{% if comp.pe is not none %}{{ "{:.2f}".format(comp.pe) }}{% else %}—{% endif %}</td>
+              <td>{% if comp.ps is not none %}{{ "{:.2f}".format(comp.ps) }}{% else %}—{% endif %}</td>
+              <td>{% if comp.ev_ebitda is not none %}{{ "{:.2f}".format(comp.ev_ebitda) }}{% else %}—{% endif %}</td>
             </tr>
           {% endfor %}
         </tbody>
