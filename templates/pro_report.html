@@ -11,220 +11,230 @@
   {% endif %}
 </head>
 <body>
-<div class="container">
+<div class="sheet">
 
-  {% macro money(v) -%}
-    {%- if v is not none -%}${{ "{:,.0f}".format(v) }}{%- else -%}—{%- endif -%}
-  {%- endmacro %}
+  {# ---------- helpers ---------- #}
+  {% macro money0(v) -%}{%- if v is not none -%}${{ "{:,.0f}".format(v) }}{%- else -%}—{%- endif -%}{%- endmacro %}
+  {% macro money2(v) -%}{%- if v is not none -%}${{ "{:,.2f}".format(v) }}{%- else -%}—{%- endif -%}{%- endmacro %}
+  {% macro mult(v)   -%}{%- if v is not none -%}{{ "{:.2f}x".format(v) }}{%- else -%}—{%- endif -%}{%- endmacro %}
+  {% macro pct(v, d=1) -%}{%- if v is not none -%}{{ "{:.{}f}%".format(v, d) }}{%- else -%}—{%- endif -%}{%- endmacro %}
 
-  {% macro money2(v) -%}
-    {%- if v is not none -%}${{ "{:,.2f}".format(v) }}{%- else -%}—{%- endif -%}
-  {%- endmacro %}
-
-  {% macro mult(v) -%}
-    {%- if v is not none -%}{{ "{:.2f}".format(v) }}x{%- else -%}—{%- endif -%}
-  {%- endmacro %}
-
-  {% macro pct(v, d=1) -%}
-    {%- if v is not none -%}{{ "{:.{}f}%".format(v, d) }}{%- else -%}—{%- endif -%}
-  {%- endmacro %}
-
-  {% macro yoy(cur, prev) -%}
+  {% macro yoy_val(cur, prev) -%}
     {%- if cur is not none and prev is not none and prev != 0 -%}
-      {{ "{:+.1f}%".format((cur - prev) / prev * 100.0) }}
-    {%- else -%}—
-    {%- endif -%}
+      {{ (cur - prev) / prev * 100.0 }}
+    {%- else -%}{{ none }}{%- endif -%}
+  {%- endmacro %}
+  {% macro yoy_badge(cur, prev) -%}
+    {%- set y = yoy_val(cur, prev) -%}
+    {%- if y is not none -%}
+      <span class="badge {{ 'pos' if y>0 else 'neg' }}">{{ "{:+.1f}%".format(y) }}</span>
+    {%- else -%}<span class="muted">—</span>{%- endif -%}
   {%- endmacro %}
 
-  <header class="page-header">
-    <div>
-      <h1>{{ ticker }}</h1>
-      <div class="muted">Professional Report · As of {{ as_of }}</div>
-      <div class="tags">
-        <span class="pill">Sector: {{ profile.sector or "N/A" }}</span>
-        <span class="pill">Industry: {{ profile.industry or "N/A" }}</span>
-      </div>
+  <!-- ===== Header ===== -->
+  <header class="hero">
+    <div class="brand">
+      <div class="firm">Equity Research</div>
+      <div class="date">As of {{ as_of }}</div>
+    </div>
+    <div class="title">
+      <h1>{{ profile.companyName or profile.name or ticker }}</h1>
+      <div class="subtitle">{{ profile.industry or '—' }} · {{ profile.sector or '—' }}</div>
+    </div>
+    <div class="callout">
+      <div class="tp-label">Price</div>
+      <div class="tp">{{ money2(header_map.get('Share Price')) }}</div>
+      <div class="tp-sub">52-Day Avg {{ money2(header_map.get('52-day Avg')) }}</div>
     </div>
   </header>
 
-  <!-- Company description -->
-  <section class="section">
-    <h2>Company Overview</h2>
-    <div class="card">
-      {% if profile.description %}
-        <p class="lead">{{ profile.description }}</p>
-      {% else %}
-        <p class="muted">No description available.</p>
-      {% endif %}
-    </div>
-  </section>
+  <!-- ===== Body with KPI rail ===== -->
+  <div class="layout">
+    <!-- Left KPI rail -->
+    <aside class="rail">
+      <div class="panel">
+        <h3 class="rail-h">Snapshot</h3>
+        <dl class="kpis">
+          {% for row in header_table %}
+            <div class="k">
+              <dt>{{ row.label }}</dt>
+              <dd>
+                {% if row.label in ["Share Price","52-day Avg"] %}{{ money2(row.value) }}
+                {% elif row.label in ["EV/S (TTM)","EV/EBITDA (TTM)"] %}{{ mult(row.value) }}
+                {% else %}{{ money0(row.value) }}{% endif %}
+              </dd>
+            </div>
+          {% endfor %}
+        </dl>
+      </div>
+      <div class="panel notes">
+        <div class="muted small">Data source: FMP. Values in base currency unless noted.</div>
+      </div>
+    </aside>
 
-  <!-- Snapshot cards -->
-  <section class="section">
-    <h2>Snapshot</h2>
-    <div class="grid grid-3">
-      {% for row in header_table %}
-        <div class="card kpi">
-          <div class="kpi-key">{{ row.label }}</div>
-          <div class="kpi-val">
-            {% if row.label in ["Share Price","52-day Avg"] %}
-              {{ money2(row.value) }}
-            {% elif row.label in ["EV/S (TTM)","EV/EBITDA (TTM)"] %}
-              {{ mult(row.value) }}
-            {% else %}
-              {{ money(row.value) }}
-            {% endif %}
+    <!-- Main article -->
+    <article class="main">
+      <!-- Company Overview -->
+      <section class="section">
+        <h2>Company Overview</h2>
+        <p class="lead">
+          {{ profile.description or "No company description available." }}
+        </p>
+      </section>
+
+      <!-- 2-Year Financials + Estimates -->
+      <section class="section">
+        <h2>Financials — Last 2 Fiscal Years & Estimates</h2>
+        <figure class="card">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                {% set years = [] %}
+                {% for r in two_year %}
+                  {% for k,v in r.items() if k != "metric" %}
+                    {% if k not in years %}{% set _ = years.append(k) %}{% endif %}
+                  {% endfor %}
+                {% endfor %}
+                {% for y in years %}<th class="tr">{{ y }}</th>{% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in two_year %}
+              <tr>
+                <td>{{ r.metric }}</td>
+                {% for y in years %}
+                  <td class="tr">{{ money0(r.get(y)) }}</td>
+                {% endfor %}
+              </tr>
+              {% endfor %}
+              {% if estimates and (estimates.revenue_est or estimates.ebitda_est) %}
+              <tr class="shade">
+                <td><em>Analyst Est. Revenue</em></td>
+                <td class="tr" colspan="{{ years|length }}">{{ money0(estimates.revenue_est) }}</td>
+              </tr>
+              <tr class="shade">
+                <td><em>Analyst Est. EBITDA</em></td>
+                <td class="tr" colspan="{{ years|length }}">{{ money0(estimates.ebitda_est) }}</td>
+              </tr>
+              {% endif %}
+            </tbody>
+          </table>
+          <figcaption class="muted small">Figures may differ from issuer disclosures due to methodology.</figcaption>
+        </figure>
+      </section>
+
+      <!-- Financial Snapshot (LQ & YTD) + commentary -->
+      <section class="section">
+        <h2>Financial Snapshot</h2>
+        <div class="cols">
+          <div class="card">
+            <h3>Last Quarter ({{ fin_snapshot.quarter.period or "N/A" }})</h3>
+            <table class="table tight">
+              <tbody>
+                <tr><td>Revenue</td><td class="tr">{{ money0(fin_snapshot.quarter.revenue) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.quarter.revenue, fin_snapshot.quarter.yoy.revenue) }}</td></tr>
+                <tr><td>Gross Margin</td><td class="tr">{{ pct(fin_snapshot.quarter.gross_margin_pct,1) }}</td><td class="tr muted">YoY</td></tr>
+                <tr><td>EBITDA</td><td class="tr">{{ money0(fin_snapshot.quarter.ebitda) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.quarter.ebitda, fin_snapshot.quarter.yoy.ebitda) }}</td></tr>
+                <tr><td>Net Income</td><td class="tr">{{ money0(fin_snapshot.quarter.net_income) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.quarter.net_income, fin_snapshot.quarter.yoy.net_income) }}</td></tr>
+                <tr><td>Cash Flow from Ops</td><td class="tr">{{ money0(fin_snapshot.quarter.ocf) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.quarter.ocf, fin_snapshot.quarter.yoy.ocf) }}</td></tr>
+                <tr><td>Free Cash Flow</td><td class="tr">{{ money0(fin_snapshot.quarter.fcf) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.quarter.fcf, fin_snapshot.quarter.yoy.fcf) }}</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="card">
+            <h3>Year-to-Date ({{ fin_snapshot.ytd.year or '—' }})</h3>
+            <table class="table tight">
+              <tbody>
+                <tr><td>Revenue</td><td class="tr">{{ money0(fin_snapshot.ytd.revenue) }}</td></tr>
+                <tr><td>EBITDA</td><td class="tr">{{ money0(fin_snapshot.ytd.ebitda) }}</td></tr>
+                <tr><td>Net Income</td><td class="tr">{{ money0(fin_snapshot.ytd.net_income) }}</td></tr>
+                <tr><td>Cash Flow from Ops</td><td class="tr">{{ money0(fin_snapshot.ytd.ocf) }}</td></tr>
+                <tr><td>Free Cash Flow</td><td class="tr">{{ money0(fin_snapshot.ytd.fcf) }}</td></tr>
+              </tbody>
+            </table>
           </div>
         </div>
-      {% endfor %}
-    </div>
-  </section>
 
-  <!-- Last 2-year financials + estimates -->
-  <section class="section">
-    <h2>Financials — Last 2 Fiscal Years</h2>
-    <div class="card">
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Metric</th>
-            {% set years = [] %}
-            {% for r in two_year %}
-              {% for k,v in r.items() if k != "metric" %}
-                {% if k not in years %}{% set _ = years.append(k) %}{% endif %}
+        {% if commentary.financials %}
+          <div class="card note">
+            <h3>LLM Commentary — Financials</h3>
+            <div class="md">{{ commentary.financials | safe }}</div>
+          </div>
+        {% endif %}
+      </section>
+
+      <!-- Industry + Macro -->
+      <section class="section">
+        <h2>Industry & Macro</h2>
+        <div class="card">
+          <h3>Industry Snapshot & Competitive Positioning</h3>
+          {% if commentary.industry %}<div class="md">{{ commentary.industry | safe }}</div>
+          {% else %}<p class="muted">No LLM commentary available.</p>{% endif %}
+        </div>
+        <div class="card" style="margin-top:12px">
+          <h3>Sector Momentum & Technicals</h3>
+          <div class="tagrow">
+            <span class="pill">Sector ETF: {{ sector_inputs.chosen_sector_etf or "N/A" }}</span>
+            {% if technical and technical.rsi_14 is not none %}
+              <span class="pill">Sector RSI(14): {{ "{:.1f}".format(technical.rsi_14) }}</span>
+            {% endif %}
+          </div>
+          {% if commentary.sector %}<div class="md">{{ commentary.sector | safe }}</div>
+          {% else %}<p class="muted">No LLM commentary available.</p>{% endif %}
+        </div>
+      </section>
+
+      <!-- Peers -->
+      <section class="section">
+        <h2>Peer Group (≤ 6) & Multiples</h2>
+        <figure class="card">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th class="tr">EV/S (TTM)</th>
+                <th class="tr">EV/EBITDA (TTM)</th>
+                <th class="tr">Dividend Yield</th>
+                <th class="tr">FCF Yield</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in peer_rows %}
+              <tr>
+                <td>{{ r["Ticker"] }}</td>
+                <td class="tr">{{ r["EV/S (TTM)"] is not none and "{:.2f}x".format(r["EV/S (TTM)"]) or "—" }}</td>
+                <td class="tr">{{ r["EV/EBITDA (TTM)"] is not none and "{:.2f}x".format(r["EV/EBITDA (TTM)"]) or "—" }}</td>
+                <td class="tr">{{ r["Dividend Yield %"] is not none and "{:.2f}%".format(r["Dividend Yield %"]) or "—" }}</td>
+                <td class="tr">{{ r["FCF Yield %"] is not none and "{:.2f}%".format(r["FCF Yield %"]) or "—" }}</td>
+              </tr>
               {% endfor %}
-            {% endfor %}
-            {% for y in years %}<th class="tr">{{ y }}</th>{% endfor %}
-          </tr>
-        </thead>
-        <tbody>
-          {% for r in two_year %}
-          <tr>
-            <td>{{ r.metric }}</td>
-            {% for y in years %}
-              {% set val = r.get(y) %}
-              <td class="tr">{{ money(val) }}</td>
-            {% endfor %}
-          </tr>
-          {% endfor %}
-          {% if estimates and (estimates.revenue_est or estimates.ebitda_est) %}
-          <tr class="subtle">
-            <td><em>Analyst Est. Revenue</em></td>
-            <td class="tr" colspan="{{ years|length }}">{{ money(estimates.revenue_est) }}</td>
-          </tr>
-          <tr class="subtle">
-            <td><em>Analyst Est. EBITDA</em></td>
-            <td class="tr" colspan="{{ years|length }}">{{ money(estimates.ebitda_est) }}</td>
-          </tr>
-          {% endif %}
-        </tbody>
-      </table>
-    </div>
-  </section>
+            </tbody>
+          </table>
+          <figcaption class="muted small">
+            Subject 5-yr avgs — EV/S:
+            {{ peer_five_year["EV/S 5y Avg"] is not none and "{:.2f}x".format(peer_five_year["EV/S 5y Avg"]) or "—" }},
+            EV/EBITDA:
+            {{ peer_five_year["EV/EBITDA 5y Avg"] is not none and "{:.2f}x".format(peer_five_year["EV/EBITDA 5y Avg"]) or "—" }}.
+          </figcaption>
+        </figure>
+      </section>
 
-  <!-- Financial snapshot: last quarter + YTD with YoY -->
-  <section class="section">
-    <h2>Financial Snapshot</h2>
-    <div class="cols">
-      <div class="card">
-        <h3>Last Quarter ({{ fin_snapshot.quarter.period or "N/A" }})</h3>
-        <table class="table tight">
-          <tbody>
-            <tr><td>Revenue</td><td class="tr">{{ money(fin_snapshot.quarter.revenue) }}</td><td class="yoy">{{ yoy(fin_snapshot.quarter.revenue, fin_snapshot.quarter.yoy.revenue) }}</td></tr>
-            <tr><td>Gross Margin</td><td class="tr">{{ pct(fin_snapshot.quarter.gross_margin_pct,1) }}</td><td class="yoy muted">YoY</td></tr>
-            <tr><td>EBITDA</td><td class="tr">{{ money(fin_snapshot.quarter.ebitda) }}</td><td class="yoy">{{ yoy(fin_snapshot.quarter.ebitda, fin_snapshot.quarter.yoy.ebitda) }}</td></tr>
-            <tr><td>Net Income</td><td class="tr">{{ money(fin_snapshot.quarter.net_income) }}</td><td class="yoy">{{ yoy(fin_snapshot.quarter.net_income, fin_snapshot.quarter.yoy.net_income) }}</td></tr>
-            <tr><td>Cash Flow from Ops</td><td class="tr">{{ money(fin_snapshot.quarter.ocf) }}</td><td class="yoy">{{ yoy(fin_snapshot.quarter.ocf, fin_snapshot.quarter.yoy.ocf) }}</td></tr>
-            <tr><td>Free Cash Flow</td><td class="tr">{{ money(fin_snapshot.quarter.fcf) }}</td><td class="yoy">{{ yoy(fin_snapshot.quarter.fcf, fin_snapshot.quarter.yoy.fcf) }}</td></tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div class="card">
-        <h3>Year-to-Date ({{ fin_snapshot.ytd.year }})</h3>
-        <table class="table tight">
-          <tbody>
-            <tr><td>Revenue</td><td class="tr">{{ money(fin_snapshot.ytd.revenue) }}</td></tr>
-            <tr><td>EBITDA</td><td class="tr">{{ money(fin_snapshot.ytd.ebitda) }}</td></tr>
-            <tr><td>Net Income</td><td class="tr">{{ money(fin_snapshot.ytd.net_income) }}</td></tr>
-            <tr><td>Cash Flow from Ops</td><td class="tr">{{ money(fin_snapshot.ytd.ocf) }}</td></tr>
-            <tr><td>Free Cash Flow</td><td class="tr">{{ money(fin_snapshot.ytd.fcf) }}</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    {% if commentary.financials %}
-      <div class="card note">
-        <h3>LLM Commentary — Financials</h3>
-        <div class="md">{{ commentary.financials | safe }}</div>
-      </div>
-    {% endif %}
-  </section>
-
-  <!-- Industry & Macro -->
-  <section class="section">
-    <h2>Industry & Macro</h2>
-    <div class="card">
-      <h3>Industry Snapshot & Competitive Positioning</h3>
-      {% if commentary.industry %}
-        <div class="md">{{ commentary.industry | safe }}</div>
-      {% else %}
-        <p class="muted">No LLM commentary available.</p>
+      {% if commentary.wrap %}
+      <section class="section">
+        <div class="card note">
+          <h3>LLM Wrap-Up</h3>
+          <div class="md">{{ commentary.wrap | safe }}</div>
+        </div>
+      </section>
       {% endif %}
-    </div>
 
-    <div class="card" style="margin-top:12px">
-      <h3>Sector Momentum & Technicals</h3>
-      <div class="tagrow">
-        <span class="pill">ETF: {{ sector_inputs.chosen_sector_etf or "N/A" }}</span>
-        <span class="pill">RSI(14): {{ "{:.1f}".format(technical.rsi_14) if technical.rsi_14 is not none else "N/A" }}</span>
-      </div>
-      {% if commentary.sector %}
-        <div class="md">{{ commentary.sector | safe }}</div>
-      {% else %}
-        <p class="muted">No LLM commentary available.</p>
-      {% endif %}
-    </div>
-  </section>
+    </article>
+  </div>
 
-  <!-- Peer group -->
-  <section class="section">
-    <h2>Peer Group (≤ 6)</h2>
-    <div class="card">
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Ticker</th>
-            <th class="tr">EV/S (TTM)</th>
-            <th class="tr">EV/EBITDA (TTM)</th>
-            <th class="tr">Dividend Yield</th>
-            <th class="tr">FCF Yield</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for r in peer_rows %}
-          <tr>
-            <td>{{ r["Ticker"] }}</td>
-            <td class="tr">{{ r["EV/S (TTM)"] is not none and "{:.2f}x".format(r["EV/S (TTM)"]) or "—" }}</td>
-            <td class="tr">{{ r["EV/EBITDA (TTM)"] is not none and "{:.2f}x".format(r["EV/EBITDA (TTM)"]) or "—" }}</td>
-            <td class="tr">{{ r["Dividend Yield %"] is not none and "{:.2f}%".format(r["Dividend Yield %"]) or "—" }}</td>
-            <td class="tr">{{ r["FCF Yield %"] is not none and "{:.2f}%".format(r["FCF Yield %"]) or "—" }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      <div class="muted footnote">
-        Subject 5-yr avgs — EV/S: {{ peer_five_year["EV/S 5y Avg"] is not none and "{:.2f}x".format(peer_five_year["EV/S 5y Avg"]) or "—" }},
-        EV/EBITDA: {{ peer_five_year["EV/EBITDA 5y Avg"] is not none and "{:.2f}x".format(peer_five_year["EV/EBITDA 5y Avg"]) or "—" }}.
-      </div>
-    </div>
-  </section>
-
-  <footer class="muted small section">
-    Data source: Financial Modeling Prep (FMP). Generated {{ as_of }}.
+  <footer class="foot muted small">
+    Generated {{ as_of }} · {{ ticker }} · Source: Financial Modeling Prep (FMP). This is not investment advice.
   </footer>
-
 </div>
 </body>
 </html>
