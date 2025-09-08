@@ -1,0 +1,6 @@
+ranking:
+  alpha: 0.4   # semantic similarity weight
+  beta: 0.3    # recency weight  
+  gamma: 0.2   # source type priority weight
+  delta: 0.1   # ticker match weight
+
