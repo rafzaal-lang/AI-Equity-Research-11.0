@@ -4,6 +4,60 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>{{ ticker }} – Professional Report</title>
+
+  <!-- Base styles (always included so the page looks good even without external CSS) -->
+  <style>
+    :root{--bg:#fafafa;--panel:#fff;--ink:#0a0a0a;--muted:#6b7280;--line:#e5e7eb;--accent:#0f172a;--pos:#065f46;--neg:#991b1b}
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif}
+    .sheet{max-width:1000px;margin:0 auto;padding:20px 16px}
+    .hero{display:grid;grid-template-columns:1fr 1fr 280px;gap:14px;align-items:center;margin-bottom:14px}
+    .brand .firm{font-weight:700;letter-spacing:.2px}
+    .brand .date{color:var(--muted);font-size:12px}
+    .title h1{margin:0 0 4px 0;font-size:24px}
+    .subtitle{color:var(--muted);font-size:13px}
+    .callout{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:12px 14px}
+    .tp-label{color:var(--muted);font-size:12px}
+    .tp{font-size:22px;font-weight:700}
+    .tp-sub{color:var(--muted);font-size:12px;margin-top:2px}
+
+    .layout{display:grid;grid-template-columns:280px 1fr;gap:16px}
+    .rail .panel,.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px}
+    .rail-h{margin:0 0 8px 0;font-size:14px}
+    .kpis{display:grid;grid-template-columns:1fr;gap:8px;margin:0}
+    .k{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+    .k dt{color:var(--muted);font-size:12px}
+    .k dd{margin:0;font-weight:600}
+
+    .section{margin-top:16px}
+    .lead{margin:0}
+    .table{width:100%;border-collapse:collapse}
+    .table thead th{font-weight:600;border-bottom:1px solid var(--line);padding:8px;text-align:left;color:#111}
+    .table td{border-bottom:1px solid var(--line);padding:8px}
+    .table .tr{text-align:right}
+    .table.tight td{padding:6px 8px}
+    .shade td{background:#fbfbfb}
+    .muted{color:var(--muted)}
+    .small{font-size:12px}
+    .pill{display:inline-block;padding:4px 10px;border:1px solid var(--line);border-radius:999px;font-size:12px;color:#444;background:#fff;margin-right:8px}
+    .tagrow{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px}
+    .note h3{margin-top:0}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
+    .badge.pos{background:#ecfdf5;color:var(--pos);border:1px solid #d1fae5}
+    .badge.neg{background:#fef2f2;color:var(--neg);border:1px solid #fee2e2}
+    .foot{margin-top:20px;text-align:center}
+
+    .md p{margin:0 0 6px 0}
+    .md ul{margin:6px 0 6px 18px}
+    .md li{margin:2px 0}
+
+    @media (max-width:960px){
+      .hero{grid-template-columns:1fr}
+      .layout{grid-template-columns:1fr}
+    }
+  </style>
+
+  <!-- Optional external or injected CSS from the Python generator -->
   {% if css_href %}
     <link rel="stylesheet" href="{{ css_href }}">
   {% elif css_inline %}
@@ -19,6 +73,7 @@
   {% macro mult(v)   -%}{%- if v is not none -%}{{ "{:.2f}x".format(v) }}{%- else -%}—{%- endif -%}{%- endmacro %}
   {% macro pct(v, d=1) -%}{%- if v is not none -%}{{ "{:.{}f}%".format(v, d) }}{%- else -%}—{%- endif -%}{%- endmacro %}
 
+  {# Robust YoY helpers #}
   {% macro yoy_val(cur, prev) -%}
     {%- if cur is not none and prev is not none and prev != 0 -%}
       {{ (cur - prev) / prev * 100.0 }}
@@ -31,6 +86,19 @@
     {%- else -%}<span class="muted">—</span>{%- endif -%}
   {%- endmacro %}
 
+  {# Safely fetch a header metric by label, whether header_map exists or not #}
+  {% macro headv(label) -%}
+    {%- if header_map is defined and header_map -%}
+      {{ header_map.get(label) }}
+    {%- else -%}
+      {%- set val = none -%}
+      {%- for r in header_table or [] -%}
+        {%- if r.label == label -%}{%- set val = r.value -%}{%- endif -%}
+      {%- endfor -%}
+      {{ val }}
+    {%- endif -%}
+  {%- endmacro %}
+
   <!-- ===== Header ===== -->
   <header class="hero">
     <div class="brand">
@@ -38,13 +106,13 @@
       <div class="date">As of {{ as_of }}</div>
     </div>
     <div class="title">
-      <h1>{{ profile.companyName or profile.name or ticker }}</h1>
+      <h1>{{ (profile.companyName or profile.name or (company and company.name) or ticker) }}</h1>
       <div class="subtitle">{{ profile.industry or '—' }} · {{ profile.sector or '—' }}</div>
     </div>
     <div class="callout">
       <div class="tp-label">Price</div>
-      <div class="tp">{{ money2(header_map.get('Share Price')) }}</div>
-      <div class="tp-sub">52-Day Avg {{ money2(header_map.get('52-day Avg')) }}</div>
+      <div class="tp">{{ money2(headv('Share Price')) }}</div>
+      <div class="tp-sub">52-Day Avg {{ money2(headv('52-day Avg')) }}</div>
     </div>
   </header>
 
@@ -55,7 +123,7 @@
       <div class="panel">
         <h3 class="rail-h">Snapshot</h3>
         <dl class="kpis">
-          {% for row in header_table %}
+          {% for row in header_table or [] %}
             <div class="k">
               <dt>{{ row.label }}</dt>
               <dd>
@@ -91,7 +159,7 @@
               <tr>
                 <th>Metric</th>
                 {% set years = [] %}
-                {% for r in two_year %}
+                {% for r in two_year or [] %}
                   {% for k,v in r.items() if k != "metric" %}
                     {% if k not in years %}{% set _ = years.append(k) %}{% endif %}
                   {% endfor %}
@@ -100,12 +168,10 @@
               </tr>
             </thead>
             <tbody>
-              {% for r in two_year %}
+              {% for r in two_year or [] %}
               <tr>
                 <td>{{ r.metric }}</td>
-                {% for y in years %}
-                  <td class="tr">{{ money0(r.get(y)) }}</td>
-                {% endfor %}
+                {% for y in years %}<td class="tr">{{ money0(r.get(y)) }}</td>{% endfor %}
               </tr>
               {% endfor %}
               {% if estimates and (estimates.revenue_est or estimates.ebitda_est) %}
@@ -127,7 +193,7 @@
       <!-- Financial Snapshot (LQ & YTD) + commentary -->
       <section class="section">
         <h2>Financial Snapshot</h2>
-        <div class="cols">
+        <div class="cols" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
           <div class="card">
             <h3>Last Quarter ({{ fin_snapshot.quarter.period or "N/A" }})</h3>
             <table class="table tight">
@@ -156,8 +222,8 @@
           </div>
         </div>
 
-        {% if commentary.financials %}
-          <div class="card note">
+        {% if commentary and commentary.financials %}
+          <div class="card note" style="margin-top:12px">
             <h3>LLM Commentary — Financials</h3>
             <div class="md">{{ commentary.financials | safe }}</div>
           </div>
@@ -169,7 +235,7 @@
         <h2>Industry & Macro</h2>
         <div class="card">
           <h3>Industry Snapshot & Competitive Positioning</h3>
-          {% if commentary.industry %}<div class="md">{{ commentary.industry | safe }}</div>
+          {% if commentary and commentary.industry %}<div class="md">{{ commentary.industry | safe }}</div>
           {% else %}<p class="muted">No LLM commentary available.</p>{% endif %}
         </div>
         <div class="card" style="margin-top:12px">
@@ -177,10 +243,10 @@
           <div class="tagrow">
             <span class="pill">Sector ETF: {{ sector_inputs.chosen_sector_etf or "N/A" }}</span>
             {% if technical and technical.rsi_14 is not none %}
-              <span class="pill">Sector RSI(14): {{ "{:.1f}".format(technical.rsi_14) }}</span>
+              <span class="pill">RSI(14): {{ "{:.1f}".format(technical.rsi_14) }}</span>
             {% endif %}
           </div>
-          {% if commentary.sector %}<div class="md">{{ commentary.sector | safe }}</div>
+          {% if commentary and commentary.sector %}<div class="md">{{ commentary.sector | safe }}</div>
           {% else %}<p class="muted">No LLM commentary available.</p>{% endif %}
         </div>
       </section>
@@ -200,7 +266,7 @@
               </tr>
             </thead>
             <tbody>
-              {% for r in peer_rows %}
+              {% for r in peer_rows or [] %}
               <tr>
                 <td>{{ r["Ticker"] }}</td>
                 <td class="tr">{{ r["EV/S (TTM)"] is not none and "{:.2f}x".format(r["EV/S (TTM)"]) or "—" }}</td>
@@ -220,7 +286,7 @@
         </figure>
       </section>
 
-      {% if commentary.wrap %}
+      {% if commentary and commentary.wrap %}
       <section class="section">
         <div class="card note">
           <h3>LLM Wrap-Up</h3>
