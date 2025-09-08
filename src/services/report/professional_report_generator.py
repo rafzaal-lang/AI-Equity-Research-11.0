@@ -3,22 +3,24 @@ from __future__ import annotations
 
 import os
 import math
+import json
+import time
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import numpy as np
 import pandas as pd
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader, select_autoescape, TemplateNotFound
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-ROOT_DIR = os.getenv("PROJECT_ROOT", os.getcwd())
-TEMPLATES_DIR = os.path.join(ROOT_DIR, "templates")
-STATIC_DIR = os.path.join(ROOT_DIR, "static")
-
+# ---------------------------
+# Config / Env
+# ---------------------------
 FMP_API_KEY = os.getenv("FMP_API_KEY") or os.getenv("FINANCIAL_MODELING_PREP_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # optional
 
@@ -37,6 +39,72 @@ SECTOR_SPDRS = {
 }
 SPY = "SPY"
 
+# ---------------------------
+# Robust path resolution
+# ---------------------------
+def _find_project_root(start: Path) -> Path:
+    """
+    Walk up until we find a directory that looks like the repo root:
+    must contain both 'apis' and 'src' dirs (common in your repo),
+    or we stop at filesystem root.
+    """
+    cur = start
+    for _ in range(8):
+        if (cur / "apis").exists() and (cur / "src").exists():
+            return cur
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return start  # fallback
+
+def _resolve_paths() -> tuple[Path, Path, Path, str]:
+    """
+    Returns (ROOT_DIR, TEMPLATES_DIR, STATIC_DIR, STATIC_URL_PREFIX)
+    Priority:
+      templates:  reports/templates  ->  templates
+      static:     static             ->  reports/static
+    If none exist, still return sensible defaults; renderer will fallback with built-in template/CSS.
+    """
+    module_dir = Path(__file__).resolve().parent
+    root = _find_project_root(module_dir)
+
+    tpl_candidates = [root / "reports" / "templates", root / "templates"]
+    static_candidates = [root / "static", root / "reports" / "static"]
+
+    tpl_dir = next((p for p in tpl_candidates if p.exists()), tpl_candidates[0])
+    static_dir = next((p for p in static_candidates if p.exists()), static_candidates[0])
+
+    # URL prefix must match FastAPI mounts in your service.py
+    static_url = "/static" if static_dir == (root / "static") else "/reports-static"
+    return root, tpl_dir, static_dir, static_url
+
+ROOT_DIR, TEMPLATES_DIR, STATIC_DIR, STATIC_URL_PREFIX = _resolve_paths()
+
+# ---------------------------
+# Very small in-memory cache for FMP GETs (to reduce flakiness)
+# ---------------------------
+class _Cache:
+    def __init__(self, ttl: int = 600):
+        self.ttl = ttl
+        self._store: Dict[str, tuple[float, Any]] = {}
+
+    def get(self, key: str) -> Any:
+        rec = self._store.get(key)
+        if not rec:
+            return None
+        ts, val = rec
+        if time.time() - ts > self.ttl:
+            self._store.pop(key, None)
+            return None
+        return val
+
+    def set(self, key: str, val: Any) -> None:
+        self._store[key] = (time.time(), val)
+
+_cache = _Cache(ttl=600)
+
+def _cache_key(path: str, params: Optional[Dict[str, Any]]) -> str:
+    return json.dumps({"p": path, "q": params or {}}, sort_keys=True)
 
 # ---------------------------
 # HTTP helpers (FMP)
@@ -49,14 +117,21 @@ def _fmp_get(path: str, params: Optional[Dict[str, Any]] = None) -> Any:
     q = {"apikey": FMP_API_KEY}
     if params:
         q.update(params)
+
+    key = _cache_key(path, q)
+    cached = _cache.get(key)
+    if cached is not None:
+        return cached
+
     try:
         r = requests.get(url, params=q, timeout=20)
         r.raise_for_status()
-        return r.json()
+        data = r.json()
+        _cache.set(key, data)
+        return data
     except Exception as e:
         logger.warning("FMP GET failed %s %s -> %s", path, params, e)
         return None
-
 
 def _as_float(x: Any) -> Optional[float]:
     try:
@@ -68,7 +143,6 @@ def _as_float(x: Any) -> Optional[float]:
         return f
     except Exception:
         return None
-
 
 # ---------------------------
 # Technicals
@@ -87,7 +161,6 @@ def _rsi(prices: List[float], period: int = 14) -> Optional[float]:
     rsi = rsi.dropna()
     return float(rsi.iloc[-1]) if not rsi.empty else None
 
-
 def _sma(values: List[float], window: int) -> Optional[float]:
     if not values:
         return None
@@ -96,19 +169,17 @@ def _sma(values: List[float], window: int) -> Optional[float]:
         return float(s.mean())
     return float(s.rolling(window).mean().dropna().iloc[-1])
 
-
 # ---------------------------
 # FMP data loaders
 # ---------------------------
 def fetch_profile(ticker: str) -> Dict[str, Optional[str]]:
-    prof = _fmp_get(f"/api/v3/profile/{ticker}")
+    prof = _fmp_get(f"/api/v3/profile/{ticker}") or []
     p = prof[0] if isinstance(prof, list) and prof else {}
     return {
         "description": p.get("description") or p.get("companyName"),
         "sector": p.get("sector"),
         "industry": p.get("industry"),
     }
-
 
 def fetch_quote_block(ticker: str) -> Dict[str, Optional[float]]:
     ql = _fmp_get(f"/api/v3/quote/{ticker}") or []
@@ -122,15 +193,15 @@ def fetch_quote_block(ticker: str) -> Dict[str, Optional[float]]:
     cash = _as_float(bs.get("cashAndShortTermInvestments") or bs.get("cashAndCashEquivalents"))
     debt = _as_float(bs.get("totalDebt") or (bs.get("shortTermDebt") or 0) + (bs.get("longTermDebt") or 0))
     ev = (market_cap or 0) + (debt or 0) - (cash or 0)
+    ev = ev if market_cap is not None else None
 
     # historical closes for 52-day SMA
     hist = _fmp_get(f"/api/v3/historical-price-full/{ticker}", {"serietype": "line", "timeseries": 120}) or {}
     series = hist.get("historical") or []
-    closes = [ _as_float(x.get("close")) for x in series if _as_float(x.get("close")) is not None ]
+    closes = [_as_float(x.get("close")) for x in series if _as_float(x.get("close")) is not None]
     sma52 = _sma(closes, 52)
 
-    return {"price": price, "market_cap": market_cap, "cash": cash, "debt": debt, "ev": ev if market_cap else None, "sma52": sma52}
-
+    return {"price": price, "market_cap": market_cap, "cash": cash, "debt": debt, "ev": ev, "sma52": sma52}
 
 def _pick_number(d: dict, keys: List[str]) -> Optional[float]:
     for k in keys:
@@ -139,20 +210,15 @@ def _pick_number(d: dict, keys: List[str]) -> Optional[float]:
             return v
     return None
 
-
 def fetch_quarterlies(ticker: str) -> Dict[str, Any]:
-    """Return last up to 8 quarters of IS + CF for snapshot/TTM/YTD."""
     isl = _fmp_get(f"/api/v3/income-statement/{ticker}", {"period": "quarter", "limit": 8}) or []
     cfl = _fmp_get(f"/api/v3/cash-flow-statement/{ticker}", {"period": "quarter", "limit": 8}) or []
     return {"is": isl, "cf": cfl}
 
-
 def fetch_annuals(ticker: str) -> Dict[str, Any]:
-    """Return last up to 5 annual IS + CF for 2-year table & 5y avgs."""
     isl = _fmp_get(f"/api/v3/income-statement/{ticker}", {"period": "annual", "limit": 5}) or []
     cfl = _fmp_get(f"/api/v3/cash-flow-statement/{ticker}", {"period": "annual", "limit": 5}) or []
     return {"is": isl, "cf": cfl}
-
 
 def fetch_peers(ticker: str) -> List[str]:
     peers = _fmp_get(f"/api/v4/stock_peers", {"symbol": ticker}) or []
@@ -161,13 +227,7 @@ def fetch_peers(ticker: str) -> List[str]:
         return [p for p in lst if p and p.upper() != ticker.upper()][:6]
     return []
 
-
 def fetch_estimates_optional(ticker: str) -> Dict[str, Optional[float]]:
-    """
-    Best-effort analyst estimates (revenue, ebitda) if FMP provides.
-    We try both v3 endpoints variants.
-    """
-    # Try /v3/analyst-estimates
     data = _fmp_get(f"/api/v3/analyst-estimates/{ticker}", {"limit": 8}) or []
     rev_est = None
     ebitda_est = None
@@ -178,9 +238,8 @@ def fetch_estimates_optional(ticker: str) -> Dict[str, Optional[float]]:
             break
     return {"revenue_est": rev_est, "ebitda_est": ebitda_est}
 
-
 # ---------------------------
-# Derived calculations
+# Derived calcs
 # ---------------------------
 def _sum_last_n_quarters(rows: List[dict], key_candidates: List[str], n: int = 4) -> Optional[float]:
     if not rows:
@@ -192,9 +251,7 @@ def _sum_last_n_quarters(rows: List[dict], key_candidates: List[str], n: int = 4
     s = np.nansum(vals)
     return float(s) if not np.isnan(s) else None
 
-
 def _quarter_yoy_map(rows: List[dict]) -> Tuple[Optional[dict], Optional[dict]]:
-    """Return (latest_quarter_row, same_quarter_prior_year_row) using date keys."""
     if not rows:
         return None, None
     q0 = rows[0]
@@ -202,7 +259,6 @@ def _quarter_yoy_map(rows: List[dict]) -> Tuple[Optional[dict], Optional[dict]]:
     if not date0:
         return q0, None
     y0 = int(str(date0)[:4])
-    # Find row with year-1 and same quarter if possible
     q1 = None
     for r in rows[1:]:
         d = r.get("date") or r.get("calendarYear")
@@ -214,7 +270,6 @@ def _quarter_yoy_map(rows: List[dict]) -> Tuple[Optional[dict], Optional[dict]]:
             break
     return q0, q1
 
-
 def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     q = fetch_quarterlies(ticker)
     a = fetch_annuals(ticker)
@@ -222,16 +277,14 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     q_is = q["is"]; q_cf = q["cf"]
     a_is = a["is"]; a_cf = a["cf"]
 
-    # TTM (from last 4 quarterlies)
     rev_ttm = _sum_last_n_quarters(q_is, ["revenue", "totalRevenue"], 4)
     ebitda_ttm = _sum_last_n_quarters(q_is, ["ebitda", "EBITDA"], 4)
     gp_ttm = _sum_last_n_quarters(q_is, ["grossProfit"], 4)
     ni_ttm = _sum_last_n_quarters(q_is, ["netIncome"], 4)
     ocf_ttm = _sum_last_n_quarters(q_cf, ["netCashProvidedByOperatingActivities", "netCashProvidedByUsedInOperatingActivities"], 4)
     capex_ttm = _sum_last_n_quarters(q_cf, ["capitalExpenditure", "capitalExpenditures"], 4)
-    fcf_ttm = (ocf_ttm + capex_ttm) if (ocf_ttm is not None and capex_ttm is not None) else None  # capex is negative
+    fcf_ttm = (ocf_ttm + capex_ttm) if (ocf_ttm is not None and capex_ttm is not None) else None
 
-    # Quarter snapshot & YoY
     q0_is, q1_is = _quarter_yoy_map(q_is)
     q0_cf, q1_cf = _quarter_yoy_map(q_cf)
 
@@ -271,7 +324,6 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     if ocf_y is not None and capex_y is not None:
         q_snapshot["yoy"]["fcf"] = float(ocf_y + capex_y)
 
-    # YTD (sum quarterlies of current calendar year)
     this_year = datetime.utcnow().year
     def _sum_ytd(rows: List[dict], keys: List[str], year: int) -> Optional[float]:
         vals = []
@@ -299,15 +351,15 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
         capex_ytd = _sum_ytd(q_cf, ["capitalExpenditure", "capitalExpenditures"], this_year) or 0.0
         ytd_snapshot["fcf"] = float(ytd_snapshot["ocf"] + capex_ytd)
 
-    # Annual last two years (table)
     def _two_year_table() -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        years: List[str] = []
+        for row in a_is[:2]:
+            years.append(str(row.get("date") or row.get("calendarYear")))
+        years = [y for y in years if y][:2]
+
         def pick(row: dict, keys: List[str]) -> Optional[float]:
             return _pick_number(row, keys)
-        rows: List[Dict[str, Any]] = []
-        years = []
-        for row in a_is[:2]:
-            years.append(row.get("date") or row.get("calendarYear"))
-        years = [str(y) for y in years if y][:2]
 
         def line(metric: str, ais_keys: List[str], acf_keys: Optional[List[str]] = None, compute_fcf: bool = False):
             r = {"metric": metric}
@@ -340,7 +392,6 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
         "raw": {"q_is": q_is, "q_cf": q_cf, "a_is": a_is, "a_cf": a_cf},
     }
 
-
 def compute_multiples(ev: Optional[float], ttm: Dict[str, Optional[float]]) -> Dict[str, Optional[float]]:
     rev = ttm.get("revenue")
     ebitda = ttm.get("ebitda")
@@ -349,18 +400,16 @@ def compute_multiples(ev: Optional[float], ttm: Dict[str, Optional[float]]) -> D
         "ev_ebitda": float(ev / ebitda) if ev and ebitda and ebitda != 0 else None,
     }
 
-
 def build_peers_table(subject: str, peers: List[str]) -> Tuple[pd.DataFrame, Dict[str, Optional[float]]]:
     rows = []
-    all_tickers = [subject] + peers
-    for t in all_tickers:
+    for t in [subject] + peers:
         q = fetch_quote_block(t)
-        fin = build_financial_blocks(t)  # uses quarterlies cached by FMP
-        mult = compute_multiples(q["ev"], fin["ttm"])
-        # dividend & FCF yield (best-effort)
+        fin = build_financial_blocks(t)
+        mult = compute_multiples(q.get("ev"), fin["ttm"])
+
         prof_quote = _fmp_get(f"/api/v3/quote/{t}") or []
         pq = prof_quote[0] if prof_quote else {}
-        dividend_yield = _as_float(pq.get("yield"))  # in percent already per FMP
+        dividend_yield = _as_float(pq.get("yield"))  # percent per FMP
         mcap = q.get("market_cap")
         fcf = fin["ttm"].get("fcf")
         fcf_yield = float(fcf / mcap * 100.0) if (fcf is not None and mcap) else None
@@ -375,16 +424,15 @@ def build_peers_table(subject: str, peers: List[str]) -> Tuple[pd.DataFrame, Dic
 
     df = pd.DataFrame(rows)
 
-    # 5-year “average” multiples for subject (approx: latest EV / historical annuals)
     five_avg = {"EV/S 5y Avg": None, "EV/EBITDA 5y Avg": None}
     try:
         annuals = fetch_annuals(subject)
         ev_latest = fetch_quote_block(subject).get("ev")
         if ev_latest:
-            rev = [ _pick_number(r, ["revenue", "totalRevenue"]) for r in annuals["is"][:5] ]
-            ebt = [ _pick_number(r, ["ebitda", "EBITDA"]) for r in annuals["is"][:5] ]
-            ev_s_vals = [ (ev_latest / r) if r else np.nan for r in rev ]
-            ev_eb_vals = [ (ev_latest / e) if e else np.nan for e in ebt ]
+            rev = [_pick_number(r, ["revenue", "totalRevenue"]) for r in annuals["is"][:5]]
+            ebt = [_pick_number(r, ["ebitda", "EBITDA"]) for r in annuals["is"][:5]]
+            ev_s_vals = [(ev_latest / r) if r else np.nan for r in rev]
+            ev_eb_vals = [(ev_latest / e) if e else np.nan for e in ebt]
             if not np.isnan(ev_s_vals).all():
                 five_avg["EV/S 5y Avg"] = float(np.nanmean(ev_s_vals))
             if not np.isnan(ev_eb_vals).all():
@@ -394,15 +442,13 @@ def build_peers_table(subject: str, peers: List[str]) -> Tuple[pd.DataFrame, Dic
 
     return df, five_avg
 
-
 def sector_momentum(sector_guess: Optional[str]) -> Dict[str, Any]:
-    """1M/3M returns for sector ETFs vs SPY (all via FMP)."""
     tickers = list(SECTOR_SPDRS.values()) + [SPY]
     ret = {}
     for t in tickers:
         h = _fmp_get(f"/api/v3/historical-price-full/{t}", {"serietype": "line", "timeseries": 70}) or {}
         hist = h.get("historical") or []
-        closes = [ _as_float(x.get("close")) for x in hist if _as_float(x.get("close")) is not None ]
+        closes = [_as_float(x.get("close")) for x in hist if _as_float(x.get("close")) is not None]
         if len(closes) < 22:
             continue
         last = closes[-1]
@@ -412,22 +458,21 @@ def sector_momentum(sector_guess: Optional[str]) -> Dict[str, Any]:
     chosen = SECTOR_SPDRS.get(sector_guess or "", None)
     return {"sector_etf": chosen, "returns": ret, "spy": ret.get(SPY, {"1M": None, "3M": None})}
 
-
 def ticker_technicals(ticker: str) -> Dict[str, Optional[float]]:
     h = _fmp_get(f"/api/v3/historical-price-full/{ticker}", {"serietype": "line", "timeseries": 120}) or {}
     hist = h.get("historical") or []
-    closes = [ _as_float(x.get("close")) for x in hist if _as_float(x.get("close")) is not None ]
+    closes = [_as_float(x.get("close")) for x in hist if _as_float(x.get("close")) is not None]
     return {"rsi_14": _rsi(closes, 14) if closes else None}
-
 
 # ---------------------------
 # LLM commentary (optional)
 # ---------------------------
 def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
+    # Import lazily; never block startup
+    if not OPENAI_API_KEY:
+        return {"financials": "", "industry": "", "sector": ""}
     try:
-        if not OPENAI_API_KEY:
-            return {"financials": "", "industry": "", "sector": ""}
-        from openai import OpenAI
+        from openai import OpenAI  # openai>=1.0
         client = OpenAI(api_key=OPENAI_API_KEY)
 
         def ask(prompt: str) -> str:
@@ -458,14 +503,205 @@ def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
     except Exception:
         return {"financials": "", "industry": "", "sector": ""}
 
+# ---------------------------
+# Rendering
+# ---------------------------
+# Built-in minimal template/CSS (fallback if files are missing)
+_FALLBACK_CSS = """
+:root{--border:#e8e8e8;--muted:#666;--bg:#fff;--fg:#111}
+*{box-sizing:border-box}
+body{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:var(--fg);background:var(--bg);margin:0;padding:24px;line-height:1.55}
+.container{max-width:1100px;margin:0 auto}
+h1{font-size:28px;margin:0 0 8px}
+h2{font-size:18px;margin:0 0 8px}
+h3{font-size:15px;margin:0 0 8px}
+.muted{color:var(--muted);font-size:13px}
+.section{margin-top:28px}
+.card{border:1px solid var(--border);border-radius:12px;padding:12px;background:#fff}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.k{color:var(--muted);font-size:12px}.v{font-weight:600}
+table{width:100%;border-collapse:collapse}
+th,td{padding:8px;border-bottom:1px solid #eee;text-align:right}
+th:first-child,td:first-child{text-align:left}
+.pill{display:inline-block;padding:4px 10px;border:1px solid var(--border);border-radius:999px;font-size:12px;color:#444;background:#fafafa;margin-right:8px}
+.cols{display:grid;grid-template-columns:1.2fr 1fr;gap:16px}
+@media (max-width:900px){.grid{grid-template-columns:1fr}.cols{grid-template-columns:1fr}}
+"""
+
+_FALLBACK_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>{{ ticker }} – Pro Report</title>
+{% if css_href %}<link rel="stylesheet" href="{{ css_href }}">{% else %}<style>{{ css_inline }}</style>{% endif %}
+</head>
+<body>
+<div class="container">
+<header><h1>{{ ticker }} – Professional Report</h1><div class="muted">As of {{ as_of }}</div></header>
+
+<section class="section">
+<h2>Company Overview</h2>
+<div class="card">
+  {% if profile.description %}<p>{{ profile.description }}</p>{% else %}<p class="muted">No description available.</p>{% endif %}
+  <div class="muted" style="margin-top:6px">
+    <span class="pill">Sector: {{ profile.sector or "N/A" }}</span>
+    <span class="pill">Industry: {{ profile.industry or "N/A" }}</span>
+  </div>
+</div>
+</section>
+
+<section class="section">
+<h2>Snapshot</h2>
+<div class="grid">
+{% for row in header_table %}
+  <div class="card">
+    <div class="k">{{ row.label }}</div>
+    <div class="v">
+    {% if row.value is not none %}
+      {% if row.label in ["Market Cap","Debt","Cash","Enterprise Value (EV)"] %}{{ "${:,.0f}".format(row.value) }}
+      {% elif row.label in ["EV/S (TTM)","EV/EBITDA (TTM)"] %}{{ "{:.2f}".format(row.value) }}
+      {% else %}{{ "{:,.2f}".format(row.value) }}{% endif %}
+    {% else %}—{% endif %}
+    </div>
+  </div>
+{% endfor %}
+</div>
+</section>
+
+<section class="section">
+<h2>Financials – Last 2 Fiscal Years</h2>
+<div class="card">
+<table>
+<thead><tr><th>Metric</th>
+{% set years = [] %}
+{% for r in two_year %}
+  {% for k,v in r.items() if k != "metric" %}
+    {% if k not in years %}{% set _ = years.append(k) %}{% endif %}
+  {% endfor %}
+{% endfor %}
+{% for y in years %}<th>{{ y }}</th>{% endfor %}
+</tr></thead>
+<tbody>
+{% for r in two_year %}
+<tr>
+  <td>{{ r.metric }}</td>
+  {% for y in years %}
+    {% set val = r.get(y) %}
+    <td>{% if val is not none %}{{ "${:,.0f}".format(val) }}{% else %}—{% endif %}</td>
+  {% endfor %}
+</tr>
+{% endfor %}
+{% if estimates and (estimates.revenue_est or estimates.ebitda_est) %}
+<tr><td><em>Analyst Est. Revenue</em></td><td colspan="{{ years|length }}" style="text-align:right">{{ "${:,.0f}".format(estimates.revenue_est) if estimates.revenue_est else "—" }}</td></tr>
+<tr><td><em>Analyst Est. EBITDA</em></td><td colspan="{{ years|length }}" style="text-align:right">{{ "${:,.0f}".format(estimates.ebitda_est) if estimates.ebitda_est else "—" }}</td></tr>
+{% endif %}
+</tbody>
+</table>
+</div>
+</section>
+
+<section class="section">
+<h2>Financial Snapshot</h2>
+<div class="cols">
+  <div class="card">
+    <h3 style="margin-top:0">Last Quarter ({{ fin_snapshot.quarter.period or "N/A" }})</h3>
+    <table>
+      <tr><td>Revenue</td><td>{{ "${:,.0f}".format(fin_snapshot.quarter.revenue) if fin_snapshot.quarter.revenue is not none else "—" }}</td></tr>
+      <tr><td>Gross Margin %</td><td>{{ "{:.1f}%".format(fin_snapshot.quarter.gross_margin_pct) if fin_snapshot.quarter.gross_margin_pct is not none else "—" }}</td></tr>
+      <tr><td>EBITDA</td><td>{{ "${:,.0f}".format(fin_snapshot.quarter.ebitda) if fin_snapshot.quarter.ebitda is not none else "—" }}</td></tr>
+      <tr><td>Net Income</td><td>{{ "${:,.0f}".format(fin_snapshot.quarter.net_income) if fin_snapshot.quarter.net_income is not none else "—" }}</td></tr>
+      <tr><td>Operating Cash Flow</td><td>{{ "${:,.0f}".format(fin_snapshot.quarter.ocf) if fin_snapshot.quarter.ocf is not none else "—" }}</td></tr>
+      <tr><td>Free Cash Flow</td><td>{{ "${:,.0f}".format(fin_snapshot.quarter.fcf) if fin_snapshot.quarter.fcf is not none else "—" }}</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">Year-to-Date ({{ fin_snapshot.ytd.year }})</h3>
+    <table>
+      <tr><td>Revenue</td><td>{{ "${:,.0f}".format(fin_snapshot.ytd.revenue) if fin_snapshot.ytd.revenue is not none else "—" }}</td></tr>
+      <tr><td>EBITDA</td><td>{{ "${:,.0f}".format(fin_snapshot.ytd.ebitda) if fin_snapshot.ytd.ebitda is not none else "—" }}</td></tr>
+      <tr><td>Net Income</td><td>{{ "${:,.0f}".format(fin_snapshot.ytd.net_income) if fin_snapshot.ytd.net_income is not none else "—" }}</td></tr>
+      <tr><td>Operating Cash Flow</td><td>{{ "${:,.0f}".format(fin_snapshot.ytd.ocf) if fin_snapshot.ytd.ocf is not none else "—" }}</td></tr>
+      <tr><td>Free Cash Flow</td><td>{{ "${:,.0f}".format(fin_snapshot.ytd.fcf) if fin_snapshot.ytd.fcf is not none else "—" }}</td></tr>
+    </table>
+  </div>
+</div>
+{% if commentary.financials %}
+<div class="card" style="margin-top:12px"><h3 style="margin-top:0">LLM Commentary – Financials</h3><div>{{ commentary.financials | safe }}</div></div>
+{% endif %}
+</section>
+
+<section class="section">
+<h2>Industry & Macro</h2>
+<div class="card"><h3 style="margin-top:0">Industry Snapshot & Competitive Positioning</h3>
+{% if commentary.industry %}<div>{{ commentary.industry | safe }}</div>{% else %}<p class="muted">No LLM commentary available.</p>{% endif %}
+</div>
+<div class="card" style="margin-top:12px"><h3 style="margin-top:0">Sector Momentum & Technicals</h3>
+<p class="muted">Sector ETF: {{ sector_inputs.chosen_sector_etf or "N/A" }} • RSI(14): {{ "{:.1f}".format(technical.rsi_14) if technical.rsi_14 is not none else "N/A" }}</p>
+{% if commentary.sector %}<div>{{ commentary.sector | safe }}</div>{% else %}<p class="muted">No LLM commentary available.</p>{% endif %}
+</div>
+</section>
+
+<section class="section">
+<h2>Peer Group (≤ 6)</h2>
+<div class="card">
+<table>
+<thead><tr><th>Ticker</th><th>EV/S (TTM)</th><th>EV/EBITDA (TTM)</th><th>Dividend Yield %</th><th>FCF Yield %</th></tr></thead>
+<tbody>
+{% for r in peer_rows %}
+<tr>
+  <td>{{ r["Ticker"] }}</td>
+  <td>{{ "{:.2f}".format(r["EV/S (TTM)"]) if r["EV/S (TTM)"] is not none else "—" }}</td>
+  <td>{{ "{:.2f}".format(r["EV/EBITDA (TTM)"]) if r["EV/EBITDA (TTM)"] is not none else "—" }}</td>
+  <td>{{ "{:.2f}%".format(r["Dividend Yield %"]) if r["Dividend Yield %"] is not none else "—" }}</td>
+  <td>{{ "{:.2f}%".format(r["FCF Yield %"]) if r["FCF Yield %"] is not none else "—" }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+<div class="muted" style="margin-top:8px">
+Subject 5-yr avgs: EV/S {{ "{:.2f}".format(peer_five_year["EV/S 5y Avg"]) if peer_five_year["EV/S 5y Avg"] is not none else "—" }},
+EV/EBITDA {{ "{:.2f}".format(peer_five_year["EV/EBITDA 5y Avg"]) if peer_five_year["EV/EBITDA 5y Avg"] is not none else "—" }}.
+</div>
+</div>
+</section>
+
+<footer class="section muted"><div>Data source: Financial Modeling Prep (FMP).</div></footer>
+</div>
+</body>
+</html>"""
+
+def _load_template(env: Environment) -> Any:
+    """
+    Return a Jinja template. If disk template missing, return a compiled fallback.
+    """
+    try:
+        return env.get_template("pro_report.html")
+    except TemplateNotFound:
+        logger.warning("pro_report.html not found in %s — using built-in fallback.", TEMPLATES_DIR)
+        return env.from_string(_FALLBACK_HTML)
+
+def fetch_profile_safe(ticker: str) -> Dict[str, Optional[str]]:
+    try:
+        return fetch_profile(ticker)
+    except Exception as e:
+        logger.warning("profile fetch failed: %s", e)
+        return {"description": None, "sector": None, "industry": None}
 
 # ---------------------------
-# Render HTML
+# Public entry
 # ---------------------------
 def render_pro_report_html(ticker: str) -> str:
     t = ticker.upper().strip()
+    if not FMP_API_KEY:
+        # don't crash; give helpful HTML
+        err_html = f"<h3>Error</h3><p>Missing FMP_API_KEY in environment. Set it in Render → Environment.</p>"
+        out_dir = ROOT_DIR / "reports"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"pro_report_{t}.html"
+        out_path.write_text(err_html, encoding="utf-8")
+        return str(out_path)
 
-    profile = fetch_profile(t)
+    profile = fetch_profile_safe(t)
     quote = fetch_quote_block(t)
     fundamentals = build_financial_blocks(t)
     multiples = compute_multiples(quote.get("ev"), fundamentals["ttm"])
@@ -473,10 +709,8 @@ def render_pro_report_html(ticker: str) -> str:
     tech = ticker_technicals(t)
     sector = sector_momentum(profile.get("sector"))
 
-    # peers
     peers = fetch_peers(t)
     if not peers:
-        # heuristic fallback: take top sector ETF holdings (static) but exclude self
         static = {
             "XLK": ["AAPL","MSFT","NVDA","AVGO","CRM","ADBE"],
             "XLF": ["JPM","BAC","WFC","GS","MS","C"],
@@ -506,11 +740,7 @@ def render_pro_report_html(ticker: str) -> str:
         {"label": "EV/EBITDA (TTM)", "value": multiples.get("ev_ebitda")},
     ]
 
-    fin_snapshot = {
-        "quarter": fundamentals["quarter"],
-        "ytd": fundamentals["ytd"],
-        "ttm": fundamentals["ttm"],
-    }
+    fin_snapshot = {"quarter": fundamentals["quarter"], "ytd": fundamentals["ytd"], "ttm": fundamentals["ttm"]}
 
     sector_inputs = {
         "chosen_sector_etf": sector.get("sector_etf"),
@@ -520,14 +750,21 @@ def render_pro_report_html(ticker: str) -> str:
         "peer_table_preview": peer_df.head(6).to_dict(orient="records"),
     }
 
-    commentary = llm_commentary(
-        {"fin": fin_snapshot, "profile": profile, "sector": sector_inputs, "tech": tech},
-        t,
-    )
+    commentary = llm_commentary({"fin": fin_snapshot, "profile": profile, "sector": sector_inputs, "tech": tech}, t)
 
-    env = Environment(loader=FileSystemLoader(TEMPLATES_DIR), autoescape=select_autoescape(["html", "xml"]))
-    tpl = env.get_template("pro_report.html")
-    html = tpl.render(
+    # Prepare Jinja environment; if no template folder, still works
+    env = Environment(
+        loader=FileSystemLoader(str(TEMPLATES_DIR)),
+        autoescape=select_autoescape(["html", "xml"])
+    )
+    template = _load_template(env)
+
+    # Decide CSS: link if file exists, else inline fallback
+    css_file = (STATIC_DIR / "pro_report.css")
+    css_href = f"{STATIC_URL_PREFIX}/pro_report.css" if css_file.exists() else None
+    css_inline = _FALLBACK_CSS if not css_file.exists() else ""
+
+    html = template.render(
         as_of=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
         ticker=t,
         profile=profile,
@@ -540,12 +777,12 @@ def render_pro_report_html(ticker: str) -> str:
         sector_inputs=sector_inputs,
         technical=tech,
         commentary=commentary,
-        static_path="/static/pro_report.css",
+        css_href=css_href,
+        css_inline=css_inline,
     )
 
-    out_dir = os.path.join(ROOT_DIR, "reports")
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f"pro_report_{t}.html")
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(html)
-    return out_path
+    out_dir = ROOT_DIR / "reports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"pro_report_{t}.html"
+    out_path.write_text(html, encoding="utf-8")
+    return str(out_path)
