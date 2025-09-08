@@ -1,4 +1,4 @@
-# src/services/report/professional_report_generator.py
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import os
@@ -23,6 +23,7 @@ logger.setLevel(logging.INFO)
 # ---------------------------
 FMP_API_KEY = os.getenv("FMP_API_KEY") or os.getenv("FINANCIAL_MODELING_PREP_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # optional
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 SECTOR_SPDRS = {
     "Communication Services": "XLC",
@@ -43,11 +44,6 @@ SPY = "SPY"
 # Robust path resolution
 # ---------------------------
 def _find_project_root(start: Path) -> Path:
-    """
-    Walk up until we find a directory that looks like the repo root:
-    must contain both 'apis' and 'src' dirs (common in your repo),
-    or we stop at filesystem root.
-    """
     cur = start
     for _ in range(8):
         if (cur / "apis").exists() and (cur / "src").exists():
@@ -55,16 +51,9 @@ def _find_project_root(start: Path) -> Path:
         if cur.parent == cur:
             break
         cur = cur.parent
-    return start  # fallback
+    return start
 
 def _resolve_paths() -> tuple[Path, Path, Path, str]:
-    """
-    Returns (ROOT_DIR, TEMPLATES_DIR, STATIC_DIR, STATIC_URL_PREFIX)
-    Priority:
-      templates:  reports/templates  ->  templates
-      static:     static             ->  reports/static
-    If none exist, still return sensible defaults; renderer will fallback with built-in template/CSS.
-    """
     module_dir = Path(__file__).resolve().parent
     root = _find_project_root(module_dir)
 
@@ -74,14 +63,36 @@ def _resolve_paths() -> tuple[Path, Path, Path, str]:
     tpl_dir = next((p for p in tpl_candidates if p.exists()), tpl_candidates[0])
     static_dir = next((p for p in static_candidates if p.exists()), static_candidates[0])
 
-    # URL prefix must match FastAPI mounts in your service.py
     static_url = "/static" if static_dir == (root / "static") else "/reports-static"
     return root, tpl_dir, static_dir, static_url
 
 ROOT_DIR, TEMPLATES_DIR, STATIC_DIR, STATIC_URL_PREFIX = _resolve_paths()
 
 # ---------------------------
-# Very small in-memory cache for FMP GETs (to reduce flakiness)
+# Tiny markdown -> HTML helper (graceful if not installed)
+# ---------------------------
+try:
+    import markdown as _md
+    def _md_to_html(txt: Optional[str]) -> str:
+        if not txt: return ""
+        return _md.markdown(txt, extensions=["extra", "sane_lists", "tables"])
+except Exception:
+    _md = None
+    def _md_to_html(txt: Optional[str]) -> str:
+        if not txt: return ""
+        s = txt.replace("**", "")
+        s = s.replace("\r\n", "\n").strip()
+        lines = [ln.strip() for ln in s.split("\n") if ln.strip()]
+        html = []
+        for ln in lines:
+            if ln.startswith("- "):
+                html.append(f"<div>• {ln[2:]}</div>")
+            else:
+                html.append(f"<p>{ln}</p>")
+        return "\n".join(html)
+
+# ---------------------------
+# Very small in-memory cache for FMP GETs
 # ---------------------------
 class _Cache:
     def __init__(self, ttl: int = 600):
@@ -176,6 +187,7 @@ def fetch_profile(ticker: str) -> Dict[str, Optional[str]]:
     prof = _fmp_get(f"/api/v3/profile/{ticker}") or []
     p = prof[0] if isinstance(prof, list) and prof else {}
     return {
+        "companyName": p.get("companyName"),
         "description": p.get("description") or p.get("companyName"),
         "sector": p.get("sector"),
         "industry": p.get("industry"),
@@ -187,7 +199,6 @@ def fetch_quote_block(ticker: str) -> Dict[str, Optional[float]]:
     price = _as_float(q.get("price"))
     market_cap = _as_float(q.get("marketCap"))
 
-    # balance sheet for debt/cash (latest quarter)
     bsl = _fmp_get(f"/api/v3/balance-sheet-statement/{ticker}", {"period": "quarter", "limit": 1}) or []
     bs = bsl[0] if bsl else {}
     cash = _as_float(bs.get("cashAndShortTermInvestments") or bs.get("cashAndCashEquivalents"))
@@ -195,7 +206,6 @@ def fetch_quote_block(ticker: str) -> Dict[str, Optional[float]]:
     ev = (market_cap or 0) + (debt or 0) - (cash or 0)
     ev = ev if market_cap is not None else None
 
-    # historical closes for 52-day SMA
     hist = _fmp_get(f"/api/v3/historical-price-full/{ticker}", {"serietype": "line", "timeseries": 120}) or {}
     series = hist.get("historical") or []
     closes = [_as_float(x.get("close")) for x in series if _as_float(x.get("close")) is not None]
@@ -468,9 +478,9 @@ def ticker_technicals(ticker: str) -> Dict[str, Optional[float]]:
 # LLM commentary (optional)
 # ---------------------------
 def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
-    # Import lazily; never block startup
     if not OPENAI_API_KEY:
         return {"financials": "", "industry": "", "sector": ""}
+
     try:
         from openai import OpenAI  # openai>=1.0
         client = OpenAI(api_key=OPENAI_API_KEY)
@@ -478,10 +488,10 @@ def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
         def ask(prompt: str) -> str:
             try:
                 r = client.chat.completions.create(
-                    model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-                    temperature=0.3,
+                    model=OPENAI_MODEL,
+                    temperature=0.2,
                     messages=[
-                        {"role": "system", "content": "You are a senior equity research analyst. Be concise, factual, objective."},
+                        {"role": "system", "content": "You are a senior equity research analyst. Write tight, neutral bullets."},
                         {"role": "user", "content": prompt},
                     ],
                 )
@@ -491,22 +501,40 @@ def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
                 return ""
 
         fin = payload.get("fin")
-        prof = payload.get("profile")
+        prof = payload.get("profile") or {}
         sect = payload.get("sector")
         tech = payload.get("tech")
 
-        p1 = f"Summarize last quarter and YTD for {ticker} with YoY context. Data: {fin}. Focus: Revenue, GM%, EBITDA, NI, OCF, FCF. 5-8 bullets."
-        p2 = f"Industry snapshot & competitive positioning for {ticker} in 5-8 bullets. Sector={prof.get('sector')}, Industry={prof.get('industry')}."
-        p3 = f"Sector view using 1M/3M momentum vs SPY and RSI(14). Data: {sect}. Technicals: {tech}. 5 bullets max."
+        p1 = (
+            f"Summarize last quarter and YTD for {ticker} with YoY context. "
+            f"Data: {fin}. Focus: Revenue, Gross Margin %, EBITDA, Net Income, OCF, FCF. 5–8 bullets. "
+            "Return markdown bullets starting with '- '."
+        )
+        p2 = (
+            f"Industry snapshot & competitive positioning for {ticker}. "
+            f"Sector={prof.get('sector')}, Industry={prof.get('industry')}. 6–9 bullets. "
+            "Return markdown bullets."
+        )
+        p3 = (
+            "Sector view using 1M/3M momentum vs SPY and RSI(14). "
+            f"Data: {sect}. Technicals: {tech}. 4–6 bullets. Return markdown bullets."
+        )
 
-        return {"financials": ask(p1), "industry": ask(p2), "sector": ask(p3)}
+        fin_md = ask(p1)
+        ind_md = ask(p2)
+        sec_md = ask(p3)
+
+        return {
+            "financials": _md_to_html(fin_md),
+            "industry": _md_to_html(ind_md),
+            "sector": _md_to_html(sec_md),
+        }
     except Exception:
         return {"financials": "", "industry": "", "sector": ""}
 
 # ---------------------------
 # Rendering
 # ---------------------------
-# Built-in minimal template/CSS (fallback if files are missing)
 _FALLBACK_CSS = """
 :root{--border:#e8e8e8;--muted:#666;--bg:#fff;--fg:#111}
 *{box-sizing:border-box}
@@ -671,9 +699,6 @@ EV/EBITDA {{ "{:.2f}".format(peer_five_year["EV/EBITDA 5y Avg"]) if peer_five_ye
 </html>"""
 
 def _load_template(env: Environment) -> Any:
-    """
-    Return a Jinja template. If disk template missing, return a compiled fallback.
-    """
     try:
         return env.get_template("pro_report.html")
     except TemplateNotFound:
@@ -685,22 +710,12 @@ def fetch_profile_safe(ticker: str) -> Dict[str, Optional[str]]:
         return fetch_profile(ticker)
     except Exception as e:
         logger.warning("profile fetch failed: %s", e)
-        return {"description": None, "sector": None, "industry": None}
+        return {"companyName": None, "description": None, "sector": None, "industry": None}
 
 # ---------------------------
-# Public entry
+# Core renderers (string + file)
 # ---------------------------
-def render_pro_report_html(ticker: str) -> str:
-    t = ticker.upper().strip()
-    if not FMP_API_KEY:
-        # don't crash; give helpful HTML
-        err_html = f"<h3>Error</h3><p>Missing FMP_API_KEY in environment. Set it in Render → Environment.</p>"
-        out_dir = ROOT_DIR / "reports"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"pro_report_{t}.html"
-        out_path.write_text(err_html, encoding="utf-8")
-        return str(out_path)
-
+def _build_render_context(t: str) -> Dict[str, Any]:
     profile = fetch_profile_safe(t)
     quote = fetch_quote_block(t)
     fundamentals = build_financial_blocks(t)
@@ -709,6 +724,7 @@ def render_pro_report_html(ticker: str) -> str:
     tech = ticker_technicals(t)
     sector = sector_momentum(profile.get("sector"))
 
+    # peers
     peers = fetch_peers(t)
     if not peers:
         static = {
@@ -752,37 +768,121 @@ def render_pro_report_html(ticker: str) -> str:
 
     commentary = llm_commentary({"fin": fin_snapshot, "profile": profile, "sector": sector_inputs, "tech": tech}, t)
 
-    # Prepare Jinja environment; if no template folder, still works
-    env = Environment(
-        loader=FileSystemLoader(str(TEMPLATES_DIR)),
-        autoescape=select_autoescape(["html", "xml"])
-    )
+    return {
+        "as_of": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "ticker": t,
+        "profile": profile,
+        "header_table": header_table,
+        "two_year": fundamentals["annual_two_years_table"],
+        "estimates": estimates,
+        "fin_snapshot": fin_snapshot,
+        "peer_rows": peer_df.to_dict(orient="records"),
+        "peer_five_year": five_year,
+        "sector_inputs": sector_inputs,
+        "technical": tech,
+        "commentary": commentary,
+    }
+
+def generate_html_report(payload: Dict[str, Any]) -> str:
+    """
+    UI expects this to return an HTML string.
+    Accepts payload with company.symbol / ticker / symbol.
+    """
+    t = (
+        ((payload.get("company") or {}).get("symbol")) or
+        payload.get("ticker") or
+        payload.get("symbol") or
+        ""
+    ).upper().strip()
+
+    if not t:
+        raise ValueError("ticker/symbol is required")
+
+    if not FMP_API_KEY:
+        return "<h3>Error</h3><p>Missing FMP_API_KEY in environment. Set it in Render → Environment.</p>"
+
+    ctx = _build_render_context(t)
+
+    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=select_autoescape(["html", "xml"]))
     template = _load_template(env)
 
-    # Decide CSS: link if file exists, else inline fallback
     css_file = (STATIC_DIR / "pro_report.css")
     css_href = f"{STATIC_URL_PREFIX}/pro_report.css" if css_file.exists() else None
     css_inline = _FALLBACK_CSS if not css_file.exists() else ""
 
-    html = template.render(
-        as_of=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-        ticker=t,
-        profile=profile,
-        header_table=header_table,
-        two_year=fundamentals["annual_two_years_table"],
-        estimates=estimates,
-        fin_snapshot=fin_snapshot,
-        peer_rows=peer_df.to_dict(orient="records"),
-        peer_five_year=five_year,
-        sector_inputs=sector_inputs,
-        technical=tech,
-        commentary=commentary,
-        css_href=css_href,
-        css_inline=css_inline,
-    )
+    html = template.render(css_href=css_href, css_inline=css_inline, **ctx)
+    return html
+
+def render_pro_report_html(ticker: str) -> str:
+    """
+    Keeps your original behavior (write file and return path) — useful for API-only route.
+    """
+    if not FMP_API_KEY:
+        err_html = f"<h3>Error</h3><p>Missing FMP_API_KEY in environment. Set it in Render → Environment.</p>"
+        out_dir = ROOT_DIR / "reports"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"pro_report_{ticker}.html"
+        out_path.write_text(err_html, encoding="utf-8")
+        return str(out_path)
+
+    html = generate_html_report({"ticker": ticker})
+    out_dir = ROOT_DIR / "reports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"pro_report_{ticker.upper()}.html"
+    out_path.write_text(html, encoding="utf-8")
+    return str(out_path)
+
+# ---------- Charts/EML expected by UI ----------
+def _create_charts(financial_summary: Dict[str, Any]) -> Dict[str, str]:
+    """
+    Stub for now — UI can call this safely.
+    Return {cid: path_to_png}. Keep empty to skip images.
+    """
+    return {}
+
+def package_report_as_eml(html_content: str, charts: Dict[str, str], subject: str, to_email: str, from_email: str) -> str:
+    """
+    Build a simple .eml file with inline images referenced by cid keys.
+    """
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.image import MIMEImage
+    from email.utils import formatdate
+
+    msg = MIMEMultipart("related")
+    msg["Subject"] = subject
+    msg["From"] = from_email
+    msg["To"] = to_email
+    msg["Date"] = formatdate(localtime=True)
+
+    alt = MIMEMultipart("alternative")
+    alt.attach(MIMEText("This message contains an HTML report.", "plain"))
+    alt.attach(MIMEText(html_content, "html"))
+    msg.attach(alt)
+
+    for cid, path in (charts or {}).items():
+        try:
+            with open(path, "rb") as f:
+                img = MIMEImage(f.read())
+                img.add_header("Content-ID", f"<{cid}>")
+                img.add_header("Content-Disposition", "inline", filename=Path(path).name)
+                msg.attach(img)
+        except Exception as e:
+            logger.warning("Attach image failed for %s: %s", path, e)
 
     out_dir = ROOT_DIR / "reports"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"pro_report_{t}.html"
-    out_path.write_text(html, encoding="utf-8")
+    safe = "".join(c for c in subject if c.isalnum() or c in (" ", "_", "-")).strip().replace(" ", "_")
+    out_path = out_dir / f"{safe or 'report'}.eml"
+    with open(out_path, "wb") as f:
+        f.write(msg.as_bytes())
     return str(out_path)
+
+# Export namespace expected by ui_minimal.py
+class _ProGenNS:
+    _create_charts = staticmethod(_create_charts)
+    generate_html_report = staticmethod(generate_html_report)
+    package_report_as_eml = staticmethod(package_report_as_eml)
+
+# what the UI imports
+professional_report_generator = progen = _ProGenNS()
