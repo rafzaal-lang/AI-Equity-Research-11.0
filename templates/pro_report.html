@@ -66,18 +66,19 @@
   {% macro pct(v,d=1) %}{% if d==1 %}{{ v | pct1 }}{% else %}{{ v | pct2 }}{% endif %}{% endmacro %}
   {% macro num1(v) %}{{ v | num1 }}{% endmacro %}
 
- {% macro yoy_val(cur, prev) -%}
+{% macro yoy_val(cur, prev) -%}
   {%- set c = safe_num(cur) -%}{%- set p = safe_num(prev) -%}
   {%- if c is not none and p is not none and p != 0 -%}
-    {{ (c - p) / p * 100.0 }}
+    {{ ((c - p) / p * 100.0)|float }}
   {%- else -%}{{ none }}{%- endif -%}
 {%- endmacro %}
-  {% macro yoy_badge(cur, prev) -%}
-    {%- set y = yoy_val(cur, prev) -%}
-    {%- if y is not none -%}
-      <span class="badge {{ 'pos' if y>0 else 'neg' }}">{{ '{:+.1f}%'.format(y) }}</span>
-    {%- else -%}<span class="muted">—</span>{%- endif -%}
-  {%- endmacro %}
+{% macro yoy_badge(cur, prev) -%}
+  {%- set y = yoy_val(cur, prev) -%}
+  {%- if y is not none -%}
+    {%- set y_num = y|float -%}
+    <span class="badge {{ 'pos' if y_num>0 else 'neg' }}">{{ '{:+.1f}%'.format(y_num) }}</span>
+  {%- else -%}<span class="muted">—</span>{%- endif -%}
+{%- endmacro %}
 
   {% macro headv(label) -%}
     {%- if header_map is defined and header_map -%}
