@@ -258,14 +258,14 @@
           </table>
           <figcaption class="muted small">
             Subject 5-yr avgs — EV/S:
-            {% set evs_avg = _num(peer_five_year["EV/S 5y Avg"]) %}
+            {% set evs_avg = safe_num(peer_five_year["EV/S 5y Avg"]) %}
             {% if evs_avg is not none %}
               {{ '%.2fx' % evs_avg }}
             {% else %}
               —
             {% endif %},
             EV/EBITDA:
-            {% set ebitda_avg = _num(peer_five_year["EV/EBITDA 5y Avg"]) %}
+            {% set ebitda_avg = safe_num(peer_five_year["EV/EBITDA 5y Avg"]) %}
             {% if ebitda_avg is not none %}
               {{ '%.2fx' % ebitda_avg }}
             {% else %}
