@@ -61,22 +61,22 @@
 
   {# ---------- helpers (robust to strings/Markup) ---------- #}
   {% macro _num(v) -%}
-    {%- if v is number -%}
-      {{ v }}
+  {%- if v is number -%}
+    {{ v|float }}
+  {%- else -%}
+    {%- set s = (v|string)|trim -%}
+    {%- if not s or s in ['—','&mdash;'] -%}{{ none }}
     {%- else -%}
-      {%- set s = (v|string)|trim -%}
-      {%- if not s or s in ['—','&mdash;'] -%}{{ none }}
+      {%- set s2 = s|replace(',','')|replace('$','')|replace('%','')|replace('x','') -%}
+      {# Only convert to float if s2 is a valid number #}
+      {%- if is_numeric(s2) and s2 != '' -%}
+        {{ (s2|string)|float }}
       {%- else -%}
-        {%- set s2 = s|replace(',','')|replace('$','')|replace('%','')|replace('x','') -%}
-        {# Only convert to float if s2 is a valid number #}
-        {%- if is_numeric(s2) and s2 != '' -%}
-          {{ s2|float }}
-        {%- else -%}
-          {{ none }}
-        {%- endif -%}
+        {{ none }}
       {%- endif -%}
     {%- endif -%}
-  {%- endmacro %}
+  {%- endif -%}
+{%- endmacro %}
 
   {% macro money0(v) %}{% set x=_num(v) %}{% if x is not none %}${{ '%.0f' % x }}{% else %}—{% endif %}{% endmacro %}
   {% macro money2(v) %}{% set x=_num(v) %}{% if x is not none %}${{ '%.2f' % x }}{% else %}—{% endif %}{% endmacro %}
