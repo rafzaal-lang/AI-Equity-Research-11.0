@@ -430,29 +430,30 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     if ytd_snapshot["ocf"] is not None:
         capex_ytd = _sum_ytd(q_cf, ["capitalExpenditure", "capitalExpenditures"], this_year) or 0.0
         ytd_snapshot["fcf"] = float(ytd_snapshot["ocf"] + capex_ytd)
-        # Add this after the existing ytd_snapshot calculation
-ytd_prev_year = this_year - 1
-ytd_prev_snapshot = {
-    "year": ytd_prev_year,
-    "revenue": _sum_ytd(q_is, ["revenue", "totalRevenue"], ytd_prev_year),
-    "ebitda": _sum_ytd(q_is, ["ebitda", "EBITDA"], ytd_prev_year),
-    "net_income": _sum_ytd(q_is, ["netIncome"], ytd_prev_year),
-    "ocf": _sum_ytd(q_cf, ["netCashProvidedByOperatingActivities", "netCashProvidedByUsedInOperatingActivities"], ytd_prev_year),
-    "fcf": None,
-}
-if ytd_prev_snapshot["ocf"] is not None:
-    capex_ytd_prev = _sum_ytd(q_cf, ["capitalExpenditure", "capitalExpenditures"], ytd_prev_year) or 0.0
-    ytd_prev_snapshot["fcf"] = float(ytd_prev_snapshot["ocf"] + capex_ytd_prev)
+        
+    # Add this after the existing ytd_snapshot calculation
+    ytd_prev_year = this_year - 1
+    ytd_prev_snapshot = {
+        "year": ytd_prev_year,
+        "revenue": _sum_ytd(q_is, ["revenue", "totalRevenue"], ytd_prev_year),
+        "ebitda": _sum_ytd(q_is, ["ebitda", "EBITDA"], ytd_prev_year),
+        "net_income": _sum_ytd(q_is, ["netIncome"], ytd_prev_year),
+        "ocf": _sum_ytd(q_cf, ["netCashProvidedByOperatingActivities", "netCashProvidedByUsedInOperatingActivities"], ytd_prev_year),
+        "fcf": None,
+    }
+    if ytd_prev_snapshot["ocf"] is not None:
+        capex_ytd_prev = _sum_ytd(q_cf, ["capitalExpenditure", "capitalExpenditures"], ytd_prev_year) or 0.0
+        ytd_prev_snapshot["fcf"] = float(ytd_prev_snapshot["ocf"] + capex_ytd_prev)
 
-# Update the return statement to include both YTD snapshots
-return {
-    "ttm": {"revenue": rev_ttm, "gross_profit": gp_ttm, "ebitda": ebitda_ttm, "net_income": ni_ttm, "ocf": ocf_ttm, "fcf": fcf_ttm},
-    "quarter": q_snapshot,
-    "ytd": ytd_snapshot,
-    "ytd_prev": ytd_prev_snapshot,  # Add this line
-    "annual_two_years_table": _two_year_table(),
-    "raw": {"q_is": q_is, "q_cf": q_cf, "a_is": a_is, "a_cf": a_cf},
-}
+    # Update the return statement to include both YTD snapshots
+    return {
+        "ttm": {"revenue": rev_ttm, "gross_profit": gp_ttm, "ebitda": ebitda_ttm, "net_income": ni_ttm, "ocf": ocf_ttm, "fcf": fcf_ttm},
+        "quarter": q_snapshot,
+        "ytd": ytd_snapshot,
+        "ytd_prev": ytd_prev_snapshot,  # Add this line
+        "annual_two_years_table": _two_year_table(),
+        "raw": {"q_is": q_is, "q_cf": q_cf, "a_is": a_is, "a_cf": a_cf},
+    }
 
 
     
@@ -1000,6 +1001,7 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
+
 
 
 
