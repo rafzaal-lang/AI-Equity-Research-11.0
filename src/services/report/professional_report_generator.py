@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*- 
 from __future__ import annotations
 
 import os
@@ -319,6 +319,53 @@ def fetch_estimates_optional(ticker: str) -> Dict[str, Optional[float]]:
     return {"revenue_est": rev_est, "ebitda_est": ebitda_est}
 
 # ---------------------------
+# NEW: Earnings context loader
+# ---------------------------
+def fetch_earnings_context(ticker: str) -> Dict[str, str]:
+    """Fetch recent earnings press releases and call transcripts for context."""
+    context = {"press_release": "", "transcript": "", "summary": ""}
+
+    try:
+        # Get recent earnings surprises for context
+        surprises = _fmp_get(f"/api/v3/earnings-surprises/{ticker}", {"limit": 1}) or []
+        if surprises:
+            latest = surprises[0]
+            period = latest.get("date", "")
+            context["summary"] = f"Latest earnings ({period}): "
+
+            eps_act = latest.get("actualEarningResult")
+            eps_est = latest.get("estimatedEarning")
+            if eps_act is not None and eps_est is not None:
+                try:
+                    eps_act_f = float(eps_act)
+                    eps_est_f = float(eps_est)
+                    if eps_est_f != 0:
+                        surprise_pct = ((eps_act_f - eps_est_f) / abs(eps_est_f)) * 100
+                        context["summary"] += f"EPS ${eps_act_f:.2f} vs est ${eps_est_f:.2f} ({surprise_pct:+.1f}% surprise). "
+                except Exception:
+                    pass
+
+        # Get earnings call transcript excerpt
+        transcripts = _fmp_get(f"/api/v3/earning_call_transcript/{ticker}", {"limit": 1}) or []
+        if transcripts and isinstance(transcripts, list):
+            transcript = transcripts[0].get("content", "")
+            if transcript:
+                # Extract management discussion (first 2000 chars after earnings discussion)
+                lower = transcript.lower()
+                mgmt_start = lower.find("management discussion")
+                if mgmt_start == -1:
+                    mgmt_start = lower.find("prepared remarks")
+                if mgmt_start != -1:
+                    context["transcript"] = transcript[mgmt_start:mgmt_start + 2000]
+                else:
+                    context["transcript"] = transcript[:2000]
+
+    except Exception as e:
+        logger.warning(f"Failed to fetch earnings context for {ticker}: {e}")
+
+    return context
+
+# ---------------------------
 # Derived calcs
 # ---------------------------
 def _sum_last_n_quarters(rows: List[dict], key_candidates: List[str], n: int = 4) -> Optional[float]:
@@ -431,7 +478,7 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
         capex_ytd = _sum_ytd(q_cf, ["capitalExpenditure", "capitalExpenditures"], this_year) or 0.0
         ytd_snapshot["fcf"] = float(ytd_snapshot["ocf"] + capex_ytd)
 
-    # --------- ADDED: previous calendar YTD snapshot ---------
+    # previous calendar YTD snapshot
     ytd_prev_year = this_year - 1
     ytd_prev_snapshot = {
         "year": ytd_prev_year,
@@ -444,7 +491,6 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     if ytd_prev_snapshot["ocf"] is not None:
         capex_ytd_prev = _sum_ytd(q_cf, ["capitalExpenditure", "capitalExpenditures"], ytd_prev_year) or 0.0
         ytd_prev_snapshot["fcf"] = float(ytd_prev_snapshot["ocf"] + capex_ytd_prev)
-    # ---------------------------------------------------------
 
     def _two_year_table() -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
@@ -483,7 +529,7 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
         "ttm": {"revenue": rev_ttm, "gross_profit": gp_ttm, "ebitda": ebitda_ttm, "net_income": ni_ttm, "ocf": ocf_ttm, "fcf": fcf_ttm},
         "quarter": q_snapshot,
         "ytd": ytd_snapshot,
-        "ytd_prev": ytd_prev_snapshot,  # <--- surfaced here
+        "ytd_prev": ytd_prev_snapshot,
         "annual_two_years_table": _two_year_table(),
         "raw": {"q_is": q_is, "q_cf": q_cf, "a_is": a_is, "a_cf": a_cf},
     }
@@ -561,14 +607,14 @@ def ticker_technicals(ticker: str) -> Dict[str, Optional[float]]:
     return {"rsi_14": _rsi(closes, 14) if closes else None}
 
 # ---------------------------
-# LLM commentary (optional)
+# LLM commentary (enhanced)
 # ---------------------------
 def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
     if not OPENAI_API_KEY:
         return {"financials": "", "industry": "", "sector": ""}
 
     try:
-        from openai import OpenAI  # openai>=1.0
+        from openai import OpenAI
         client = OpenAI(api_key=OPENAI_API_KEY)
 
         def ask(prompt: str) -> str:
@@ -577,7 +623,7 @@ def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
                     model=OPENAI_MODEL,
                     temperature=0.2,
                     messages=[
-                        {"role": "system", "content": "You are a senior equity research analyst. Write tight, neutral bullets."},
+                        {"role": "system", "content": "You are a senior equity research analyst. Write tight, neutral bullets focusing on business drivers and operational context."},
                         {"role": "user", "content": prompt},
                     ],
                 )
@@ -591,19 +637,37 @@ def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
         sect = payload.get("sector")
         tech = payload.get("tech")
 
+        # Get earnings context for enhanced analysis (always fetch fresh here)
+        earnings_context = fetch_earnings_context(ticker)
+
+        # Enhanced financial analysis with earnings context
+        context_info = ""
+        if earnings_context.get("summary"):
+            context_info = f"Recent earnings context: {earnings_context['summary']}"
+        if earnings_context.get("transcript"):
+            context_info += f"Management comments: {earnings_context['transcript'][:500]}..."
+
         p1 = (
-            f"Summarize last quarter and YTD for {ticker} with YoY context. "
-            f"Data: {fin}. Focus: Revenue, Gross Margin %, EBITDA, Net Income, OCF, FCF. 5–8 bullets. "
-            "Return markdown bullets starting with '- '."
+            f"Analyze {ticker}'s last quarter and YTD performance with YoY context, focusing on business drivers and operational factors. "
+            f"Financial data: {fin}. "
+            f"{context_info} "
+            f"Explain WHY key metrics changed (revenue, margins, cash flow) based on business fundamentals. "
+            f"Focus on: Revenue drivers, margin dynamics, cash generation quality, operational efficiency. "
+            f"Return 6-8 analytical bullets starting with '- '. Avoid just stating numbers - explain the business story."
         )
+
         p2 = (
-            f"Industry snapshot & competitive positioning for {ticker}. "
-            f"Sector={prof.get('sector')}, Industry={prof.get('industry')}. 6–9 bullets. "
-            "Return markdown bullets."
+            f"Industry analysis and competitive positioning for {ticker}. "
+            f"Sector={prof.get('sector')}, Industry={prof.get('industry')}. "
+            f"Analyze competitive dynamics, market positioning, and industry-specific factors affecting performance. "
+            f"Return 6-8 bullets starting with '- '. Focus on strategic context and competitive advantages/challenges."
         )
+
         p3 = (
-            "Sector view using 1M/3M momentum vs SPY and RSI(14). "
-            f"Data: {sect}. Technicals: {tech}. 4–6 bullets. Return markdown bullets."
+            f"Sector and technical analysis for {ticker}. "
+            f"Sector momentum data: {sect}. Technical indicators: {tech}. "
+            f"Assess sector rotation trends, relative performance vs peers, and technical setup. "
+            f"Return 4-6 bullets starting with '- '. Connect technical patterns to fundamental thesis."
         )
 
         fin_md = ask(p1)
@@ -615,7 +679,8 @@ def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
             "industry": _md_to_html(ind_md),
             "sector": _md_to_html(sec_md),
         }
-    except Exception:
+    except Exception as e:
+        logger.warning(f"LLM commentary failed: {e}")
         return {"financials": "", "industry": "", "sector": ""}
 
 # ---------------------------
@@ -859,7 +924,16 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         "peer_table_preview": peer_df.head(6).to_dict(orient="records"),
     }
 
-    commentary = llm_commentary({"fin": fin_snapshot, "profile": profile, "sector": sector_inputs, "tech": tech}, t)
+    # NEW: add earnings context, and pass it along to the commentary payload
+    earnings_context = fetch_earnings_context(t)
+
+    commentary = llm_commentary({
+        "fin": fin_snapshot,
+        "profile": profile,
+        "sector": sector_inputs,
+        "tech": tech,
+        "earnings": earnings_context,  # included for completeness (though llm_commentary fetches fresh too)
+    }, t)
 
     return {
         "as_of": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
@@ -892,7 +966,7 @@ def _make_env() -> Environment:
     
     # Add custom functions to globals for template use
     env.globals['is_numeric'] = _is_numeric
-    env.globals['safe_num'] = _safe_num  # Make sure this line is here
+    env.globals['safe_num'] = _safe_num
     
     return env
 
