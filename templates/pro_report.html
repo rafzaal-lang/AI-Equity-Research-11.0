@@ -69,7 +69,7 @@
       {%- else -%}
         {%- set s2 = s|replace(',','')|replace('$','')|replace('%','')|replace('x','') -%}
         {# Only convert to float if s2 is a valid number #}
-        {%- if s2 is match('^-?\\d*(\\.\\d+)?$') and s2 != '' -%}
+        {%- if is_numeric(s2) and s2 != '' -%}
           {{ s2|float }}
         {%- else -%}
           {{ none }}
