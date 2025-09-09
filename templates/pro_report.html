@@ -60,29 +60,11 @@
 <div class="sheet">
 
   {# ---------- helpers (robust to strings/Markup) ---------- #}
-  {% macro _num(v) -%}
-  {%- if v is number -%}
-    {{ v|float }}
-  {%- else -%}
-    {%- set s = (v|string)|trim -%}
-    {%- if not s or s in ['—','&mdash;'] -%}{{ none }}
-    {%- else -%}
-      {%- set s2 = s|replace(',','')|replace('$','')|replace('%','')|replace('x','') -%}
-      {# Only convert to float if s2 is a valid number #}
-      {%- if is_numeric(s2) and s2 != '' -%}
-        {{ (s2|string)|float }}
-      {%- else -%}
-        {{ none }}
-      {%- endif -%}
-    {%- endif -%}
-  {%- endif -%}
-{%- endmacro %}
-
-  {% macro money0(v) %}{% set x=_num(v) %}{% if x is not none %}${{ '%.0f' % x }}{% else %}—{% endif %}{% endmacro %}
-  {% macro money2(v) %}{% set x=_num(v) %}{% if x is not none %}${{ '%.2f' % x }}{% else %}—{% endif %}{% endmacro %}
-  {% macro mult(v)   %}{% set x=_num(v) %}{% if x is not none %}{{ '%.2fx' % x }}{% else %}—{% endif %}{% endmacro %}
-  {% macro pct(v,d=1)%}{% set x=_num(v) %}{% if x is not none %}{{ ("{0:." ~ d ~ "f}%").format(x) }}{% else %}—{% endif %}{% endmacro %}
-  {% macro num1(v)   %}{% set x=_num(v) %}{% if x is not none %}{{ '%.1f' % x }}{% else %}—{% endif %}{% endmacro %}
+  {% macro money0(v) %}{{ v | money0 }}{% endmacro %}
+  {% macro money2(v) %}{{ v | money2 }}{% endmacro %}
+  {% macro mult(v) %}{{ v | mult2 }}{% endmacro %}
+  {% macro pct(v,d=1) %}{% if d==1 %}{{ v | pct1 }}{% else %}{{ v | pct2 }}{% endif %}{% endmacro %}
+  {% macro num1(v) %}{{ v | num1 }}{% endmacro %}
 
   {% macro yoy_val(cur, prev) -%}
     {%- set c = _num(cur) -%}{%- set p = _num(prev) -%}
