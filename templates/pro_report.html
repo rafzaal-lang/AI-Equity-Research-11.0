@@ -193,17 +193,19 @@
             </table>
           </div>
           <div class="card">
-  <h3>Year-to-Date ({{ fin_snapshot.ytd.year or '—' }})</h3>
-  <table class="table tight">
-    <tbody>
-      <tr><td>Revenue</td><td class="tr">{{ money0(fin_snapshot.ytd.revenue) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.ytd.revenue, fin_snapshot.ytd_prev.revenue) }}</td></tr>
-      <tr><td>EBITDA</td><td class="tr">{{ money0(fin_snapshot.ytd.ebitda) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.ytd.ebitda, fin_snapshot.ytd_prev.ebitda) }}</td></tr>
-      <tr><td>Net Income</td><td class="tr">{{ money0(fin_snapshot.ytd.net_income) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.ytd.net_income, fin_snapshot.ytd_prev.net_income) }}</td></tr>
-      <tr><td>Cash Flow from Ops</td><td class="tr">{{ money0(fin_snapshot.ytd.ocf) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.ytd.ocf, fin_snapshot.ytd_prev.ocf) }}</td></tr>
-      <tr><td>Free Cash Flow</td><td class="tr">{{ money0(fin_snapshot.ytd.fcf) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.ytd.fcf, fin_snapshot.ytd_prev.fcf) }}</td></tr>
-    </tbody>
-  </table>
-</div>
+            <h3>Year-to-Date ({{ fin_snapshot.ytd.year or '—' }})</h3>
+            <table class="table tight">
+              <tbody>
+                <tr><td>Revenue</td><td class="tr">{{ money0(fin_snapshot.ytd.revenue) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.ytd.revenue, fin_snapshot.ytd_prev.revenue) }}</td></tr>
+                <tr><td>EBITDA</td><td class="tr">{{ money0(fin_snapshot.ytd.ebitda) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.ytd.ebitda, fin_snapshot.ytd_prev.ebitda) }}</td></tr>
+                <tr><td>Net Income</td><td class="tr">{{ money0(fin_snapshot.ytd.net_income) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.ytd.net_income, fin_snapshot.ytd_prev.net_income) }}</td></tr>
+                <tr><td>Cash Flow from Ops</td><td class="tr">{{ money0(fin_snapshot.ytd.ocf) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.ytd.ocf, fin_snapshot.ytd_prev.ocf) }}</td></tr>
+                <tr><td>Free Cash Flow</td><td class="tr">{{ money0(fin_snapshot.ytd.fcf) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.ytd.fcf, fin_snapshot.ytd_prev.fcf) }}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div> <!-- closes cols div -->
+      </section> <!-- closes section -->
 
 
           
