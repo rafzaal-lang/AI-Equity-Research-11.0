@@ -66,12 +66,12 @@
   {% macro pct(v,d=1) %}{% if d==1 %}{{ v | pct1 }}{% else %}{{ v | pct2 }}{% endif %}{% endmacro %}
   {% macro num1(v) %}{{ v | num1 }}{% endmacro %}
 
-  {% macro yoy_val(cur, prev) -%}
-    {%- set c = _num(cur) -%}{%- set p = _num(prev) -%}
-    {%- if c is not none and p is not none and p != 0 -%}
-      {{ (c - p) / p * 100.0 }}
-    {%- else -%}{{ none }}{%- endif -%}
-  {%- endmacro %}
+ {% macro yoy_val(cur, prev) -%}
+  {%- set c = safe_num(cur) -%}{%- set p = safe_num(prev) -%}
+  {%- if c is not none and p is not none and p != 0 -%}
+    {{ (c - p) / p * 100.0 }}
+  {%- else -%}{{ none }}{%- endif -%}
+{%- endmacro %}
   {% macro yoy_badge(cur, prev) -%}
     {%- set y = yoy_val(cur, prev) -%}
     {%- if y is not none -%}
