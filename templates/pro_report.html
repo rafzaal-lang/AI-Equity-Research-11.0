@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>{{ ticker }} – Professional Report</title>
+  <style>
+    :root{--bg:#fafafa;--panel:#fff;--ink:#0a0a0a;--muted:#6b7280;--line:#e5e7eb;--accent:#0f172a;--pos:#065f46;--neg:#991b1b}
+    *{box-sizing:border-box}
+    html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:ui-sans-serif,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif}
+    .sheet{max-width:1000px;margin:0 auto;padding:20px 16px}
+    .hero{display:grid;grid-template-columns:1fr 1fr 280px;gap:14px;align-items:center;margin-bottom:14px}
+    .brand .firm{font-weight:700;letter-spacing:.2px}
+    .brand .date{color:var(--muted);font-size:12px}
+    .title h1{margin:0 0 4px 0;font-size:24px}
+    .subtitle{color:var(--muted);font-size:13px}
+    .callout{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:12px 14px}
+    .tp-label{color:var(--muted);font-size:12px}
+    .tp{font-size:22px;font-weight:700}
+    .tp-sub{color:var(--muted);font-size:12px;margin-top:2px}
+    .layout{display:grid;grid-template-columns:280px 1fr;gap:16px}
+    .rail .panel,.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px}
+    .rail-h{margin:0 0 8px 0;font-size:14px}
+    .kpis{display:grid;grid-template-columns:1fr;gap:8px;margin:0}
+    .k{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+    .k dt{color:var(--muted);font-size:12px}
+    .k dd{margin:0;font-weight:600}
+    .section{margin-top:16px}
+    .lead{margin:0}
+    .table{width:100%;border-collapse:collapse}
+    .table thead th{font-weight:600;border-bottom:1px solid var(--line);padding:8px;text-align:left;color:#111}
+    .table td{border-bottom:1px solid var(--line);padding:8px}
+    .table .tr{text-align:right}
+    .table.tight td{padding:6px 8px}
+    .shade td{background:#fbfbfb}
+    .muted{color:var(--muted)}
+    .small{font-size:12px}
+    .pill{display:inline-block;padding:4px 10px;border:1px solid var(--line);border-radius:999px;font-size:12px;color:#444;background:#fff;margin-right:8px}
+    .tagrow{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px}
+    .note h3{margin-top:0}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600}
+    .badge.pos{background:#ecfdf5;color:var(--pos);border:1px solid #d1fae5}
+    .badge.neg{background:#fef2f2;color:var(--neg);border:1px solid #fee2e2}
+    .foot{margin-top:20px;text-align:center}
+    .md p{margin:0 0 6px 0}
+    .md ul{margin:6px 0 6px 18px}
+    .md li{margin:2px 0}
+    @media (max-width:960px){
+      .hero{grid-template-columns:1fr}
+      .layout{grid-template-columns:1fr}
+    }
+  </style>
+  {% if css_href %}
+    <link rel="stylesheet" href="{{ css_href }}">
+  {% elif css_inline %}
+    <style>{{ css_inline }}</style>
+  {% endif %}
+</head>
+<body>
+<div class="sheet">
+
+  {# ---------- helpers (robust to strings/Markup) ---------- #}
+  {% macro money0(v) %}{{ v | money0 }}{% endmacro %}
+  {% macro money2(v) %}{{ v | money2 }}{% endmacro %}
+  {% macro mult(v) %}{{ v | mult2 }}{% endmacro %}
+  {% macro pct(v,d=1) %}{% if d==1 %}{{ v | pct1 }}{% else %}{{ v | pct2 }}{% endif %}{% endmacro %}
+  {% macro num1(v) %}{{ v | num1 }}{% endmacro %}
+
+{% macro yoy_val(cur, prev) -%}
+  {%- set c = safe_num(cur) -%}{%- set p = safe_num(prev) -%}
+  {%- if c is not none and p is not none and p != 0 -%}
+    {{ ((c - p) / p * 100.0)|float }}
+  {%- else -%}{{ none }}{%- endif -%}
+{%- endmacro %}
+{% macro yoy_badge(cur, prev) -%}
+  {%- set y = yoy_val(cur, prev) -%}
+  {%- if y is not none -%}
+    {%- set y_num = y|float -%}
+    <span class="badge {{ 'pos' if y_num>0 else 'neg' }}">{{ '{:+.1f}%'.format(y_num) }}</span>
+  {%- else -%}<span class="muted">—</span>{%- endif -%}
+{%- endmacro %}
+
+  {% macro headv(label) -%}
+    {%- if header_map is defined and header_map -%}
+      {{ header_map.get(label) }}
+    {%- else -%}
+      {%- set val = none -%}
+      {%- for r in header_table or [] -%}
+        {%- if r.label == label -%}{%- set val = r.value -%}{%- endif -%}
+      {%- endfor -%}
+      {{ val }}
+    {%- endif -%}
+  {%- endmacro %}
+
+  <header class="hero">
+    <div class="brand">
+      <div class="firm">Equity Research</div>
+      <div class="date">As of {{ as_of }}</div>
+    </div>
+    <div class="title">
+      <h1>{{ (profile.companyName or profile.name or (company and company.name) or ticker) }}</h1>
+      <div class="subtitle">{{ profile.industry or '—' }} · {{ profile.sector or '—' }}</div>
+    </div>
+    <div class="callout">
+      <div class="tp-label">Price</div>
+      <div class="tp">{{ money2(headv('Share Price')) }}</div>
+      <div class="tp-sub">52-Day Avg {{ money2(headv('52-day Avg')) }}</div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="rail">
+      <div class="panel">
+        <h3 class="rail-h">Snapshot</h3>
+        <dl class="kpis">
+          {% for row in header_table or [] %}
+            <div class="k">
+              <dt>{{ row.label }}</dt>
+              <dd>
+                {% if row.label in ["Share Price","52-day Avg"] %}{{ money2(row.value) }}
+                {% elif row.label in ["EV/S (TTM)","EV/EBITDA (TTM)"] %}{{ mult(row.value) }}
+                {% else %}{{ money0(row.value) }}{% endif %}
+              </dd>
+            </div>
+          {% endfor %}
+        </dl>
+      </div>
+      <div class="panel notes">
+        <div class="muted small">Data source: FMP. Values in base currency unless noted.</div>
+      </div>
+    </aside>
+    <article class="main">
+      <section class="section">
+        <h2>Company Overview</h2>
+        <p class="lead">
+          {{ profile.description or "No company description available." }}
+        </p>
+      </section>
+
+      <section class="section">
+        <h2>Financials — Last 2 Fiscal Years & Estimates</h2>
+        <figure class="card">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Metric</th>
+                {% set years = [] %}
+                {% for r in two_year or [] %}
+                  {% for k,v in r.items() if k != "metric" %}
+                    {% if k not in years %}{% set _ = years.append(k) %}{% endif %}
+                  {% endfor %}
+                {% endfor %}
+                {% for y in years %}<th class="tr">{{ y }}</th>{% endfor %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in two_year or [] %}
+              <tr>
+                <td>{{ r.metric }}</td>
+                {% for y in years %}<td class="tr">{{ money0(r.get(y)) }}</td>{% endfor %}
+              </tr>
+              {% endfor %}
+              {% if estimates and (estimates.revenue_est or estimates.ebitda_est) %}
+              <tr class="shade">
+                <td><em>Analyst Est. Revenue</em></td>
+                <td class="tr" colspan="{{ years|length }}">{{ money0(estimates.revenue_est) }}</td>
+              </tr>
+              <tr class="shade">
+                <td><em>Analyst Est. EBITDA</em></td>
+                <td class="tr" colspan="{{ years|length }}">{{ money0(estimates.ebitda_est) }}</td>
+              </tr>
+              {% endif %}
+            </tbody>
+          </table>
+          <figcaption class="muted small">Figures may differ from issuer disclosures due to methodology.</figcaption>
+        </figure>
+      </section>
+
+      <section class="section">
+        <h2>Financial Snapshot</h2>
+        <div class="cols" style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+          <div class="card">
+            <h3>Last Quarter ({{ fin_snapshot.quarter.period or "N/A" }})</h3>
+            <table class="table tight">
+              <tbody>
+                <tr><td>Revenue</td><td class="tr">{{ money0(fin_snapshot.quarter.revenue) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.quarter.revenue, fin_snapshot.quarter.yoy.revenue) }}</td></tr>
+                <tr><td>Gross Margin</td><td class="tr">{{ pct(fin_snapshot.quarter.gross_margin_pct,1) }}</td><td class="tr muted">YoY</td></tr>
+                <tr><td>EBITDA</td><td class="tr">{{ money0(fin_snapshot.quarter.ebitda) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.quarter.ebitda, fin_snapshot.quarter.yoy.ebitda) }}</td></tr>
+                <tr><td>Net Income</td><td class="tr">{{ money0(fin_snapshot.quarter.net_income) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.quarter.net_income, fin_snapshot.quarter.yoy.net_income) }}</td></tr>
+                <tr><td>Cash Flow from Ops</td><td class="tr">{{ money0(fin_snapshot.quarter.ocf) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.quarter.ocf, fin_snapshot.quarter.yoy.ocf) }}</td></tr>
+                <tr><td>Free Cash Flow</td><td class="tr">{{ money0(fin_snapshot.quarter.fcf) }}</td><td class="tr">{{ yoy_badge(fin_snapshot.quarter.fcf, fin_snapshot.quarter.yoy.fcf) }}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>Year-to-Date ({{ fin_snapshot.ytd.year or '—' }})</h3>
+            <table class="table tight">
+              <tbody>
+                <tr><td>Revenue</td><td class="tr">{{ money0(fin_snapshot.ytd.revenue) }}</td></tr>
+                <tr><td>EBITDA</td><td class="tr">{{ money0(fin_snapshot.ytd.ebitda) }}</td></tr>
+                <tr><td>Net Income</td><td class="tr">{{ money0(fin_snapshot.ytd.net_income) }}</td></tr>
+                <tr><td>Cash Flow from Ops</td><td class="tr">{{ money0(fin_snapshot.ytd.ocf) }}</td></tr>
+                <tr><td>Free Cash Flow</td><td class="tr">{{ money0(fin_snapshot.ytd.fcf) }}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        {% if commentary and commentary.financials %}
+          <div class="card note" style="margin-top:12px">
+            <h3>LLM Commentary — Financials</h3>
+            <div class="md">{{ commentary.financials | safe }}</div>
+          </div>
+        {% endif %}
+      </section>
+      <section class="section">
+        <h2>Industry & Macro</h2>
+        <div class="card">
+          <h3>Industry Snapshot & Competitive Positioning</h3>
+          {% if commentary and commentary.industry %}<div class="md">{{ commentary.industry | safe }}</div>
+          {% else %}<p class="muted">No LLM commentary available.</p>{% endif %}
+        </div>
+        <div class="card" style="margin-top:12px">
+          <h3>Sector Momentum & Technicals</h3>
+          <div class="tagrow">
+            <span class="pill">Sector ETF: {{ sector_inputs.chosen_sector_etf or "N/A" }}</span>
+            {% if technical and technical.rsi_14 is not none %}
+              <span class="pill">RSI(14): {{ num1(technical.rsi_14) }}</span>
+            {% endif %}
+          </div>
+          {% if commentary and commentary.sector %}<div class="md">{{ commentary.sector | safe }}</div>
+          {% else %}<p class="muted">No LLM commentary available.</p>{% endif %}
+        </div>
+      </section>
+      <section class="section">
+        <h2>Peer Group (≤ 6) & Multiples</h2>
+        <figure class="card">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th class="tr">EV/S (TTM)</th>
+                <th class="tr">EV/EBITDA (TTM)</th>
+                <th class="tr">Dividend Yield</th>
+                <th class="tr">FCF Yield</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in peer_rows or [] %}
+              <tr>
+                <td>{{ r["Ticker"] }}</td>
+                <td class="tr">{{ mult(r["EV/S (TTM)"]) }}</td>
+                <td class="tr">{{ mult(r["EV/EBITDA (TTM)"]) }}</td>
+                <td class="tr">{{ pct(r["Dividend Yield %"],2) }}</td>
+                <td class="tr">{{ pct(r["FCF Yield %"],2) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <figcaption class="muted small">
+            Subject 5-yr avgs — EV/S:
+            {% set evs_avg = safe_num(peer_five_year["EV/S 5y Avg"]) %}
+            {% if evs_avg is not none %}
+              {{ '%.2fx' % evs_avg }}
+            {% else %}
+              —
+            {% endif %},
+            EV/EBITDA:
+            {% set ebitda_avg = safe_num(peer_five_year["EV/EBITDA 5y Avg"]) %}
+            {% if ebitda_avg is not none %}
+              {{ '%.2fx' % ebitda_avg }}
+            {% else %}
+              —
+            {% endif %}.
+          </figcaption>
+        </figure>
+      </section>
+      {% if commentary and commentary.wrap %}
+      <section class="section">
+        <div class="card note">
+          <h3>LLM Wrap-Up</h3>
+          <div class="md">{{ commentary.wrap | safe }}</div>
+        </div>
+      </section>
+      {% endif %}
+    </article>
+  </div>
+  <footer class="foot muted small">
+    Generated {{ as_of }} · {{ ticker }} · Source: Financial Modeling Prep (FMP). This is not investment advice.
+  </footer>
+</div>
+</body>
+</html>
