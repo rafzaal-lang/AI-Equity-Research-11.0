@@ -431,6 +431,21 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
         capex_ytd = _sum_ytd(q_cf, ["capitalExpenditure", "capitalExpenditures"], this_year) or 0.0
         ytd_snapshot["fcf"] = float(ytd_snapshot["ocf"] + capex_ytd)
 
+    # --------- ADDED: previous calendar YTD snapshot ---------
+    ytd_prev_year = this_year - 1
+    ytd_prev_snapshot = {
+        "year": ytd_prev_year,
+        "revenue": _sum_ytd(q_is, ["revenue", "totalRevenue"], ytd_prev_year),
+        "ebitda": _sum_ytd(q_is, ["ebitda", "EBITDA"], ytd_prev_year),
+        "net_income": _sum_ytd(q_is, ["netIncome"], ytd_prev_year),
+        "ocf": _sum_ytd(q_cf, ["netCashProvidedByOperatingActivities", "netCashProvidedByUsedInOperatingActivities"], ytd_prev_year),
+        "fcf": None,
+    }
+    if ytd_prev_snapshot["ocf"] is not None:
+        capex_ytd_prev = _sum_ytd(q_cf, ["capitalExpenditure", "capitalExpenditures"], ytd_prev_year) or 0.0
+        ytd_prev_snapshot["fcf"] = float(ytd_prev_snapshot["ocf"] + capex_ytd_prev)
+    # ---------------------------------------------------------
+
     def _two_year_table() -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         years: List[str] = []
@@ -468,6 +483,7 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
         "ttm": {"revenue": rev_ttm, "gross_profit": gp_ttm, "ebitda": ebitda_ttm, "net_income": ni_ttm, "ocf": ocf_ttm, "fcf": fcf_ttm},
         "quarter": q_snapshot,
         "ytd": ytd_snapshot,
+        "ytd_prev": ytd_prev_snapshot,  # <--- surfaced here
         "annual_two_years_table": _two_year_table(),
         "raw": {"q_is": q_is, "q_cf": q_cf, "a_is": a_is, "a_cf": a_cf},
     }
@@ -832,7 +848,8 @@ def _build_render_context(t: str) -> Dict[str, Any]:
     ]
     header_map = {r["label"]: r["value"] for r in header_table}
 
-    fin_snapshot = {"quarter": fundamentals["quarter"], "ytd": fundamentals["ytd"], "ttm": fundamentals["ttm"]}
+    # include ytd_prev in the snapshot we pass onward
+    fin_snapshot = {"quarter": fundamentals["quarter"], "ytd": fundamentals["ytd"], "ytd_prev": fundamentals["ytd_prev"], "ttm": fundamentals["ttm"]}
 
     sector_inputs = {
         "chosen_sector_etf": sector.get("sector_etf"),
@@ -975,5 +992,3 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
-
-
