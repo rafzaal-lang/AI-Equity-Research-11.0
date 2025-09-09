@@ -865,8 +865,7 @@ def _make_env() -> Environment:
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
         autoescape=select_autoescape(["html", "xml"])
     )
-    
-    # Use the existing safe formatting functions directly
+    # register robust filters
     env.filters["money0"] = _fmt_money0
     env.filters["money2"] = _fmt_money2
     env.filters["mult2"]  = _fmt_mult2
@@ -874,9 +873,9 @@ def _make_env() -> Environment:
     env.filters["pct2"]   = lambda v: _fmt_pct(v, 2)
     env.filters["num1"]   = _fmt_num1
     
-    # Add the safe_num function
+    # Add custom functions to globals for template use
     env.globals['is_numeric'] = _is_numeric
-    env.globals['safe_num'] = _safe_num
+    env.globals['safe_num'] = _safe_num  # Make sure this line is here
     
     return env
 
@@ -976,4 +975,5 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
+
 
