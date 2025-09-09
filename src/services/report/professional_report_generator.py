@@ -6,6 +6,7 @@ import math
 import json
 import time
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -152,6 +153,16 @@ def _safe_num(x: Any) -> Optional[float]:
         return f
     except Exception:
         return None
+
+# ---------------------------
+# Custom Jinja2 functions to replace regex matching
+# ---------------------------
+def _is_numeric(s: str) -> bool:
+    """Check if string represents a number using regex"""
+    if not isinstance(s, str) or not s.strip():
+        return False
+    pattern = r'^-?\d*\.?\d+$'
+    return bool(re.match(pattern, s.strip()))
 
 # ---------------------------
 # Jinja filters that always coerce via _safe_num
@@ -861,6 +872,10 @@ def _make_env() -> Environment:
     env.filters["pct1"]   = lambda v: _fmt_pct(v, 1)
     env.filters["pct2"]   = lambda v: _fmt_pct(v, 2)
     env.filters["num1"]   = _fmt_num1
+    
+    # Add custom functions to globals for template use
+    env.globals['is_numeric'] = _is_numeric
+    
     return env
 
 def generate_html_report(payload: Dict[str, Any]) -> str:
