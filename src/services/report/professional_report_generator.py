@@ -446,7 +446,7 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     q_is = q["is"]; q_cf = q["cf"]
     a_is = a["is"]; a_cf = a["cf"]
 
-    # ADD THESE FIELD NAME VARIABLES HERE:
+    # Field name variables for better Apple compatibility
     revenue_keys = ["revenue", "totalRevenue"]
     ebitda_keys = ["ebitda", "EBITDA"]
     gp_keys = ["grossProfit"]
@@ -469,25 +469,17 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
         "paymentsForPropertyPlantAndEquipment"
     ]
 
-    rev_ttm = _sum_last_n_quarters(q_is, ["revenue", "totalRevenue"], 4)
-    ebitda_ttm = _sum_last_n_quarters(q_is, ["ebitda", "EBITDA"], 4)
-    gp_ttm = _sum_last_n_quarters(q_is, ["grossProfit"], 4)
-    ni_ttm = _sum_last_n_quarters(q_is, ["netIncome"], 4)
-    ocf_ttm = _sum_last_n_quarters(q_cf, ["netCashProvidedByOperatingActivities", "netCashProvidedByUsedInOperatingActivities"], 4)
-    capex_ttm = _sum_last_n_quarters(q_cf, ["capitalExpenditure", "capitalExpenditures"], 4)
+    # TTM calculations using consistent field names
+    rev_ttm = _sum_last_n_quarters(q_is, revenue_keys, 4)
+    ebitda_ttm = _sum_last_n_quarters(q_is, ebitda_keys, 4)
+    gp_ttm = _sum_last_n_quarters(q_is, gp_keys, 4)
+    ni_ttm = _sum_last_n_quarters(q_is, ni_keys, 4)
+    ocf_ttm = _sum_last_n_quarters(q_cf, ocf_keys, 4)
+    capex_ttm = _sum_last_n_quarters(q_cf, capex_keys, 4)
     fcf_ttm = (ocf_ttm + capex_ttm) if (ocf_ttm is not None and capex_ttm is not None) else None
 
+    # Quarter YoY mapping
     q0_is, q1_is = _quarter_yoy_map(q_is)
-
-    debug_yoy_calculation(
-    _get(q0_is, ["revenue", "totalRevenue"]), 
-    _get(q1_is, ["revenue", "totalRevenue"]), 
-    "Revenue Quarter Mapping"
-)
-print(f"Q0 date: {q0_is.get('date') if q0_is else None}")
-print(f"Q1 date: {q1_is.get('date') if q1_is else None}")
-
-    
     q0_cf, q1_cf = _quarter_yoy_map(q_cf)
 
     def _get(row: Optional[dict], keys: List[str]) -> Optional[float]:
@@ -495,37 +487,43 @@ print(f"Q1 date: {q1_is.get('date') if q1_is else None}")
             return None
         return _pick_number(row, keys)
 
+    # Gross margin calculation
     gm_pct = None
-    rev_q = _get(q0_is, ["revenue", "totalRevenue"])
-    gp_q = _get(q0_is, ["grossProfit"])
+    rev_q = _get(q0_is, revenue_keys)
+    gp_q = _get(q0_is, gp_keys)
     if gp_q is not None and rev_q:
         gm_pct = float(gp_q / rev_q * 100.0)
 
+    # Build quarter snapshot using consistent field names
     q_snapshot = {
         "period": (q0_is or {}).get("date"),
         "revenue": rev_q,
         "gross_margin_pct": gm_pct,
-        "ebitda": _get(q0_is, ["ebitda", "EBITDA"]),
-        "net_income": _get(q0_is, ["netIncome"]),
-        "ocf": _get(q0_cf, ["netCashProvidedByOperatingActivities", "netCashProvidedByUsedInOperatingActivities"]),
+        "ebitda": _get(q0_is, ebitda_keys),
+        "net_income": _get(q0_is, ni_keys),
+        "ocf": _get(q0_cf, ocf_keys),
         "fcf": None,
         "yoy": {
-            "revenue": _get(q1_is, ["revenue", "totalRevenue"]),
-            "ebitda": _get(q1_is, ["ebitda", "EBITDA"]),
-            "net_income": _get(q1_is, ["netIncome"]),
-            "ocf": _get(q1_cf, ["netCashProvidedByOperatingActivities", "netCashProvidedByUsedInOperatingActivities"]),
+            "revenue": _get(q1_is, revenue_keys),
+            "ebitda": _get(q1_is, ebitda_keys),
+            "net_income": _get(q1_is, ni_keys),
+            "ocf": _get(q1_cf, ocf_keys),
             "fcf": None,
         },
     }
+    
+    # Calculate FCF for current and previous quarters
     ocf_q = q_snapshot["ocf"]
-    capex_q = _get(q0_cf, ["capitalExpenditure", "capitalExpenditures"])
+    capex_q = _get(q0_cf, capex_keys)
     if ocf_q is not None and capex_q is not None:
         q_snapshot["fcf"] = float(ocf_q + capex_q)
+        
     ocf_y = q_snapshot["yoy"]["ocf"]
-    capex_y = _get(q1_cf, ["capitalExpenditure", "capitalExpenditures"])
+    capex_y = _get(q1_cf, capex_keys)
     if ocf_y is not None and capex_y is not None:
         q_snapshot["yoy"]["fcf"] = float(ocf_y + capex_y)
 
+    # Debug output AFTER calculations are complete
     debug_yoy_calculation(
         q_snapshot.get("revenue"), 
         q_snapshot["yoy"].get("revenue"), 
@@ -552,74 +550,77 @@ print(f"Q1 date: {q1_is.get('date') if q1_is else None}")
         "Free Cash Flow"
     )
     
+    print(f"Q0 date: {q0_is.get('date') if q0_is else None}")
+    print(f"Q1 date: {q1_is.get('date') if q1_is else None}")
+    
     this_year = datetime.utcnow().year
 
     def _sum_ytd(rows: List[dict], keys: List[str], year: int) -> Optional[float]:
-    """Sum YTD through the same period as current year"""
-    # First, find the latest quarter date in current year
-    current_year = datetime.utcnow().year
-    latest_current_date = None
-    
-    for r in rows:
-        d = r.get("date")
-        if d and int(str(d)[:4]) == current_year:
-            if latest_current_date is None or str(d) > str(latest_current_date):
-                latest_current_date = d
-    
-    if not latest_current_date:
-        return None
-    
-    # Extract month/day from latest current date to compare same period
-    latest_month_day = str(latest_current_date)[5:]  # Gets "06-28" from "2025-06-28"
-    
-    vals = []
-    for r in rows:
-        d = r.get("date")
-        if not d:
-            continue
-        date_str = str(d)
-        if int(date_str[:4]) == year:
-            # For previous year, only include quarters through same month/day
-            if year < current_year:
-                quarter_month_day = date_str[5:]
-                if quarter_month_day <= latest_month_day:
+        """Sum YTD through the same period as current year"""
+        # First, find the latest quarter date in current year
+        current_year = datetime.utcnow().year
+        latest_current_date = None
+        
+        for r in rows:
+            d = r.get("date")
+            if d and int(str(d)[:4]) == current_year:
+                if latest_current_date is None or str(d) > str(latest_current_date):
+                    latest_current_date = d
+        
+        if not latest_current_date:
+            return None
+        
+        # Extract month/day from latest current date to compare same period
+        latest_month_day = str(latest_current_date)[5:]  # Gets "06-28" from "2025-06-28"
+        
+        vals = []
+        for r in rows:
+            d = r.get("date")
+            if not d:
+                continue
+            date_str = str(d)
+            if int(date_str[:4]) == year:
+                # For previous year, only include quarters through same month/day
+                if year < current_year:
+                    quarter_month_day = date_str[5:]
+                    if quarter_month_day <= latest_month_day:
+                        v = _pick_number(r, keys)
+                        vals.append(v if v is not None else np.nan)
+                else:
+                    # For current year, include all available quarters
                     v = _pick_number(r, keys)
                     vals.append(v if v is not None else np.nan)
-            else:
-                # For current year, include all available quarters
-                v = _pick_number(r, keys)
-                vals.append(v if v is not None else np.nan)
+        
+        if not vals:
+            return None
+        s = np.nansum(vals)
+        return float(s) if not np.isnan(s) else None
     
-    if not vals:
-        return None
-    s = np.nansum(vals)
-    return float(s) if not np.isnan(s) else None
-    
-    
+    # YTD snapshots using consistent field names
     ytd_snapshot = {
         "year": this_year,
-        "revenue": _sum_ytd(q_is, ["revenue", "totalRevenue"], this_year),
-        "ebitda": _sum_ytd(q_is, ["ebitda", "EBITDA"], this_year),
-        "net_income": _sum_ytd(q_is, ["netIncome"], this_year),
-        "ocf": _sum_ytd(q_cf, ["netCashProvidedByOperatingActivities", "netCashProvidedByUsedInOperatingActivities"], this_year),
+        "revenue": _sum_ytd(q_is, revenue_keys, this_year),
+        "ebitda": _sum_ytd(q_is, ebitda_keys, this_year),
+        "net_income": _sum_ytd(q_is, ni_keys, this_year),
+        "ocf": _sum_ytd(q_cf, ocf_keys, this_year),
         "fcf": None,
     }
     if ytd_snapshot["ocf"] is not None:
-        capex_ytd = _sum_ytd(q_cf, ["capitalExpenditure", "capitalExpenditures"], this_year) or 0.0
+        capex_ytd = _sum_ytd(q_cf, capex_keys, this_year) or 0.0
         ytd_snapshot["fcf"] = float(ytd_snapshot["ocf"] + capex_ytd)
 
-    # previous calendar YTD snapshot
+    # Previous calendar YTD snapshot
     ytd_prev_year = this_year - 1
     ytd_prev_snapshot = {
         "year": ytd_prev_year,
-        "revenue": _sum_ytd(q_is, ["revenue", "totalRevenue"], ytd_prev_year),
-        "ebitda": _sum_ytd(q_is, ["ebitda", "EBITDA"], ytd_prev_year),
-        "net_income": _sum_ytd(q_is, ["netIncome"], ytd_prev_year),
-        "ocf": _sum_ytd(q_cf, ["netCashProvidedByOperatingActivities", "netCashProvidedByUsedInOperatingActivities"], ytd_prev_year),
+        "revenue": _sum_ytd(q_is, revenue_keys, ytd_prev_year),
+        "ebitda": _sum_ytd(q_is, ebitda_keys, ytd_prev_year),
+        "net_income": _sum_ytd(q_is, ni_keys, ytd_prev_year),
+        "ocf": _sum_ytd(q_cf, ocf_keys, ytd_prev_year),
         "fcf": None,
     }
     if ytd_prev_snapshot["ocf"] is not None:
-        capex_ytd_prev = _sum_ytd(q_cf, ["capitalExpenditure", "capitalExpenditures"], ytd_prev_year) or 0.0
+        capex_ytd_prev = _sum_ytd(q_cf, capex_keys, ytd_prev_year) or 0.0
         ytd_prev_snapshot["fcf"] = float(ytd_prev_snapshot["ocf"] + capex_ytd_prev)
 
     def _two_year_table() -> List[Dict[str, Any]]:
@@ -639,8 +640,8 @@ print(f"Q1 date: {q1_is.get('date') if q1_is else None}")
                 if not y:
                     continue
                 if compute_fcf:
-                    ocf = pick(a_cf[i], ["netCashProvidedByOperatingActivities", "netCashProvidedByUsedInOperatingActivities"]) if i < len(a_cf) else None
-                    capex = pick(a_cf[i], ["capitalExpenditure", "capitalExpenditures"]) if i < len(a_cf) else None
+                    ocf = pick(a_cf[i], ocf_keys) if i < len(a_cf) else None
+                    capex = pick(a_cf[i], capex_keys) if i < len(a_cf) else None
                     r[y] = (ocf + capex) if (ocf is not None and capex is not None) else None
                 elif acf_keys:
                     r[y] = pick(a_cf[i], acf_keys) if i < len(a_cf) else None
@@ -648,10 +649,10 @@ print(f"Q1 date: {q1_is.get('date') if q1_is else None}")
                     r[y] = pick(yrow, ais_keys)
             rows.append(r)
 
-        line("Revenue", ["revenue", "totalRevenue"])
-        line("EBITDA", ["ebitda", "EBITDA"])
-        line("Net Income", ["netIncome"])
-        line("Operating Cash Flow", [], ["netCashProvidedByOperatingActivities", "netCashProvidedByUsedInOperatingActivities"])
+        line("Revenue", revenue_keys)
+        line("EBITDA", ebitda_keys)
+        line("Net Income", ni_keys)
+        line("Operating Cash Flow", [], ocf_keys)
         line("Free Cash Flow", [], compute_fcf=True)
         return rows
 
@@ -1196,8 +1197,3 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
-
-
-
-
-
