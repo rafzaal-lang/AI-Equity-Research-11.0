@@ -446,6 +446,29 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     q_is = q["is"]; q_cf = q["cf"]
     a_is = a["is"]; a_cf = a["cf"]
 
+    # ADD THESE FIELD NAME VARIABLES HERE:
+    revenue_keys = ["revenue", "totalRevenue"]
+    ebitda_keys = ["ebitda", "EBITDA"]
+    gp_keys = ["grossProfit"]
+    ni_keys = ["netIncome"]
+    
+    # Cash flow field variations (for Apple compatibility)
+    ocf_keys = [
+        "netCashProvidedByOperatingActivities",
+        "netCashProvidedByUsedInOperatingActivities", 
+        "operatingCashFlow",
+        "netCashFromOperatingActivities",
+        "cashFromOperatingActivities"
+    ]
+    
+    capex_keys = [
+        "capitalExpenditure", 
+        "capitalExpenditures",
+        "capex",
+        "investmentsInPropertyPlantAndEquipment",
+        "paymentsForPropertyPlantAndEquipment"
+    ]
+
     rev_ttm = _sum_last_n_quarters(q_is, ["revenue", "totalRevenue"], 4)
     ebitda_ttm = _sum_last_n_quarters(q_is, ["ebitda", "EBITDA"], 4)
     gp_ttm = _sum_last_n_quarters(q_is, ["grossProfit"], 4)
@@ -1173,6 +1196,7 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
+
 
 
 
