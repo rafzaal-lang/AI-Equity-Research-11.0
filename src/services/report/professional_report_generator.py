@@ -26,6 +26,13 @@ FMP_API_KEY = os.getenv("FMP_API_KEY") or os.getenv("FINANCIAL_MODELING_PREP_API
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")  # optional
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
+# Peer-quality knobs (tunable via env; sensible defaults)
+PEER_MIN_MCAP_ABS = float(os.getenv("PEER_MIN_MCAP_ABS", "5000000000"))  # $5B
+PEER_MIN_MCAP_RATIO = float(os.getenv("PEER_MIN_MCAP_RATIO", "0.02"))    # 2% of subject mkt cap
+PEER_US_EXCHANGES_ONLY = os.getenv("PEER_US_EXCHANGES_ONLY", "1") == "1" # keep NYSE/NASDAQ/AMEX
+PEER_REQUIRE_POS_EBITDA = os.getenv("PEER_REQUIRE_POS_EBITDA", "1") == "1"
+_ALLOWED_EXCHANGES = {"NASDAQ", "NYSE", "AMEX"}
+
 SECTOR_SPDRS = {
     "Communication Services": "XLC",
     "Consumer Discretionary": "XLY",
@@ -582,7 +589,6 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     print(f"Q1 date: {q1_is.get('date') if q1_is else None}")
 
     # ---------- Fiscal YTD (fix) ----------
-    # Determine fiscal year-end month and last quarter end date
     last_q_date = (q0_is or {}).get("date")
     last_q_date = str(last_q_date) if last_q_date else None
     fye_month = _infer_fye_month(a_is, q_is)
@@ -600,7 +606,6 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     # EBITDA YTD (with fallback)
     ebitda_ytd, ebitda_ytd_prev = _ytd_metric(ebitda_keys)
     if ebitda_ytd is None or ebitda_ytd_prev is None:
-        # try OI + D&A fiscal sums as fallback
         oi_ytd = _sum_ytd_fiscal(q_is, ["operatingIncome"], last_q_date, fye_month)
         da_ytd = _sum_ytd_fiscal(q_is, ["depreciationAndAmortization", "depreciation", "amortization"], last_q_date, fye_month)
         oi_prev = _sum_prev_ytd_fiscal(q_is, ["operatingIncome"], last_q_date, fye_month)
@@ -619,11 +624,8 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     fcf_ytd = float(ocf_ytd + capex_ytd) if (ocf_ytd is not None and capex_ytd is not None) else None
     fcf_ytd_prev = float(ocf_ytd_prev + capex_ytd_prev) if (ocf_ytd_prev is not None and capex_ytd_prev is not None) else None
 
-    # YTD snapshots
-    fy_label = None
-    if last_q_date:
-        fy_label = _fy_of(last_q_date, fye_month)
-
+    # YTD snapshots (labeled by fiscal year)
+    fy_label = _fy_of(last_q_date, fye_month) if last_q_date else None
     ytd_snapshot = {
         "year": fy_label,
         "revenue": rev_ytd,
@@ -691,8 +693,8 @@ def compute_multiples(ev: Optional[float], ttm: Dict[str, Optional[float]]) -> D
     rev = ttm.get("revenue")
     ebitda = ttm.get("ebitda")
     return {
-        "ev_s": float(ev / rev) if ev and rev else None,
-        "ev_ebitda": float(ev / ebitda) if ev and ebitda and ebitda != 0 else None,
+        "ev_s": float(ev / rev) if (ev and rev and rev > 0) else None,
+        "ev_ebitda": float(ev / ebitda) if (ev and ebitda and ebitda > 0) else None,
     }
 
 def build_peers_table(subject: str, peers: List[str]) -> Tuple[pd.DataFrame, Dict[str, Optional[float]]]:
@@ -737,24 +739,92 @@ def build_peers_table(subject: str, peers: List[str]) -> Tuple[pd.DataFrame, Dic
 
     return df, five_avg
 
-def _filter_peers(peers: List[str], min_mcap: float = 5e9) -> List[str]:
+# --- Peer filtering helpers ---
+def _get_exchange(ticker: str) -> Optional[str]:
+    """Best-effort exchange from FMP profile; returns e.g., 'NASDAQ', 'NYSE'."""
+    try:
+        prof = _fmp_get(f"/api/v3/profile/{ticker}") or []
+        p = prof[0] if isinstance(prof, list) and prof else {}
+        return (p.get("exchangeShortName") or p.get("exchange") or "").upper()
+    except Exception:
+        return None
+
+def _smart_peer_filter(subject_t: str,
+                       subject_prof: Dict[str, Any],
+                       subject_mcap: Optional[float],
+                       candidates: List[str]) -> List[str]:
     """
-    Filter raw peer list to remove penny/micro-cap tickers.
-    Uses market cap threshold and sanity checks.
+    Strong filter for comps quality:
+      - Size filter: >= max(PEER_MIN_MCAP_ABS, PEER_MIN_MCAP_RATIO * subject mcap)
+      - Same sector as subject (strict first pass, then relaxed)
+      - US primary exchanges (optional)
+      - Positive TTM EBITDA (optional)
     """
-    clean = []
-    for p in peers:
+    min_mcap = max(PEER_MIN_MCAP_ABS, (subject_mcap or 0) * PEER_MIN_MCAP_RATIO)
+    want_sector = (subject_prof or {}).get("sector")
+
+    keep: List[str] = []
+    seen = set()
+
+    def _try_add(c: str, strict: bool) -> bool:
+        c = (c or "").upper().strip()
+        if not c or c == subject_t or c in seen:
+            return False
         try:
-            q = fetch_quote_block(p)
-            if not q.get("market_cap"):
-                continue
-            if q["market_cap"] < min_mcap:
-                continue
-            clean.append(p.upper())
+            q = fetch_quote_block(c)
+            mcap = q.get("market_cap") or 0
+            if not mcap or mcap < min_mcap:
+                return False
+
+            c_prof = fetch_profile_safe(c)
+            if strict and want_sector and c_prof.get("sector") and c_prof["sector"] != want_sector:
+                return False
+
+            if PEER_US_EXCHANGES_ONLY:
+                ex = _get_exchange(c)
+                if ex and ex not in _ALLOWED_EXCHANGES:
+                    return False
+
+            if PEER_REQUIRE_POS_EBITDA:
+                fin = build_financial_blocks(c)
+                e = fin["ttm"].get("ebitda")
+                if not (e is not None and e > 0):
+                    return False
+
+            keep.append(c)
+            seen.add(c)
+            return True
+        except Exception:
+            return False
+
+    # Pass 1: strict
+    for c in candidates:
+        _try_add(c, strict=True)
+    # Pass 2: relax sector if too few
+    if len(keep) < 6:
+        for c in candidates:
+            if len(keep) >= 12: break
+            _try_add(c, strict=False)
+
+    return keep[:12]  # we’ll trim to 6 downstream
+
+# Legacy light filter retained for backwards compatibility (not used in main flow now)
+def _filter_peers(peers: List[str], min_mcap: float = 5e9) -> List[str]:
+    clean = []
+    seen = set()
+    for p in peers or []:
+        if not isinstance(p, str):
+            continue
+        t = p.upper().strip()
+        if not t or t in seen:
+            continue
+        try:
+            q = fetch_quote_block(t)
+            if q.get("market_cap") and q["market_cap"] >= min_mcap:
+                clean.append(t); seen.add(t)
         except Exception:
             continue
-    return clean
-
+    return clean[:12]
 
 def sector_momentum(sector_guess: Optional[str]) -> Dict[str, Any]:
     tickers = list(SECTOR_SPDRS.values()) + [SPY]
@@ -815,7 +885,7 @@ def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
         if earnings_context.get("summary"):
             context_info = f"Recent earnings context: {earnings_context['summary']}"
         if earnings_context.get("transcript"):
-            context_info += f"Management comments: {earnings_context['transcript'][:500]}..."
+            context_info += f" Management comments: {earnings_context['transcript'][:500]}..."
 
         p1 = (
             f"Analyze {ticker}'s last quarter and fiscal YTD performance with YoY context, focusing on business drivers and operational factors. "
@@ -1036,30 +1106,6 @@ def fetch_profile_safe(ticker: str) -> Dict[str, Optional[str]]:
 # ---------------------------
 # Core renderers (string + file)
 # ---------------------------
-def _filter_peers(peers: List[str], min_mcap: float = 5e9) -> List[str]:
-    """
-    Clean raw peer list: remove microcaps / illiquid names.
-    Keeps only tickers with market cap >= min_mcap.
-    """
-    clean: List[str] = []
-    seen = set()
-    for p in peers or []:
-        if not isinstance(p, str):
-            continue
-        t = p.upper().strip()
-        if not t or t in seen:
-            continue
-        try:
-            q = fetch_quote_block(t)
-            mcap = q.get("market_cap")
-            if mcap and float(mcap) >= float(min_mcap):
-                clean.append(t)
-                seen.add(t)
-        except Exception:
-            continue
-    return clean[:12]  # keep a small pool; we’ll trim to 6 later
-
-
 def _build_render_context(t: str) -> Dict[str, Any]:
     profile = fetch_profile_safe(t)
     quote = fetch_quote_block(t)
@@ -1070,21 +1116,30 @@ def _build_render_context(t: str) -> Dict[str, Any]:
     sector = sector_momentum(profile.get("sector"))
 
     # -----------------------------
-    # Better peers (flexible for ANY ticker)
+    # Robust peer selection (ANY ticker)
     # -----------------------------
-    peers: List[str] = fetch_peers(t) or []
-    peers = _filter_peers(peers)
+    seeds: List[str] = fetch_peers(t) or []
 
-    # If FMP peers were empty/low quality, try the production classifier (SEC + FMP blend)
-    if not peers:
-        try:
-            from src.services.peers.peer_classifier import peer_universe
-            peers = peer_universe(t, max_peers=6, fmp_api_key=FMP_API_KEY) or []
-        except Exception as e:
-            logger.warning("peer classifier fallback failed for %s: %s", t, e)
-            peers = []
+    # Augment/backup with production classifier (SEC + FMP blend)
+    try:
+        from src.services.peers.peer_classifier import peer_universe
+        cls = peer_universe(t, max_peers=12, fmp_api_key=FMP_API_KEY) or []
+    except Exception as e:
+        logger.warning("peer classifier fallback failed for %s: %s", t, e)
+        cls = []
 
-    # Final static fallback only if still empty (ensures app works for obscure tickers too)
+    # Merge + de-dupe while preserving order
+    merged: List[str] = []
+    seen = set()
+    for x in (seeds + cls):
+        xu = (x or "").upper().strip()
+        if xu and xu not in seen and xu != t.upper():
+            merged.append(xu); seen.add(xu)
+
+    # Strong quality filter (size/sector/exchange/EBITDA)
+    peers = _smart_peer_filter(t, profile, quote.get("market_cap"), merged)
+
+    # Final static fallback only if still empty
     if not peers:
         static = {
             "XLK": ["AAPL","MSFT","NVDA","AVGO","CRM","ADBE"],
@@ -1101,11 +1156,10 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         }
         etf = SECTOR_SPDRS.get(profile.get("sector") or "", "SPY")
         peers = [p for p in static.get(etf, ["AAPL","MSFT","NVDA","AMZN","META","GOOGL"]) if p.upper() != t][:6]
+    else:
+        peers = peers[:6]  # trim
 
-    # Deduplicate and trim to ≤6
-    peers = [x for i, x in enumerate(peers) if x and peers.index(x) == i][:6]
-
-    # Build the peer table as before (unchanged downstream)
+    # Build the peer table (unchanged downstream)
     peer_df, five_year = build_peers_table(t, peers)
 
     header_table = [
@@ -1120,7 +1174,6 @@ def _build_render_context(t: str) -> Dict[str, Any]:
     ]
     header_map = {r["label"]: r["value"] for r in header_table}
 
-    # include ytd_prev in the snapshot we pass onward
     fin_snapshot = {
         "quarter": fundamentals["quarter"],
         "ytd": fundamentals["ytd"],
@@ -1136,7 +1189,6 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         "peer_table_preview": peer_df.head(6).to_dict(orient="records"),
     }
 
-    # Earnings context (unchanged)
     earnings_context = fetch_earnings_context(t)
 
     commentary = llm_commentary({
@@ -1146,22 +1198,6 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         "tech": tech,
         "earnings": earnings_context,
     }, t)
-
-    return {
-        "as_of": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
-        "ticker": t,
-        "profile": profile,
-        "header_table": header_table,
-        "header_map": header_map,
-        "two_year": fundamentals["annual_two_years_table"],
-        "estimates": estimates,
-        "fin_snapshot": fin_snapshot,
-        "peer_rows": peer_df.to_dict(orient="records"),
-        "peer_five_year": five_year,
-        "sector_inputs": sector_inputs,
-        "technical": {"rsi_14": _safe_num(tech.get("rsi_14"))},
-        "commentary": commentary,
-    }
 
     return {
         "as_of": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
@@ -1289,6 +1325,3 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
-
-
-
