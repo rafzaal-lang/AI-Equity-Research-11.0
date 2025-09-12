@@ -455,6 +455,16 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     fcf_ttm = (ocf_ttm + capex_ttm) if (ocf_ttm is not None and capex_ttm is not None) else None
 
     q0_is, q1_is = _quarter_yoy_map(q_is)
+
+    debug_yoy_calculation(
+    _get(q0_is, ["revenue", "totalRevenue"]), 
+    _get(q1_is, ["revenue", "totalRevenue"]), 
+    "Revenue Quarter Mapping"
+)
+print(f"Q0 date: {q0_is.get('date') if q0_is else None}")
+print(f"Q1 date: {q1_is.get('date') if q1_is else None}")
+
+    
     q0_cf, q1_cf = _quarter_yoy_map(q_cf)
 
     def _get(row: Optional[dict], keys: List[str]) -> Optional[float]:
@@ -1163,6 +1173,7 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
+
 
 
 
