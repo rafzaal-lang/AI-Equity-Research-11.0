@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*- 
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import os
@@ -42,20 +42,22 @@ SECTOR_SPDRS = {
 SPY = "SPY"
 
 # ---------------------------
-# Robust path resolution
+# Debug helper
 # ---------------------------
 def debug_yoy_calculation(current_val, previous_val, metric_name):
     """Debug helper to verify YoY calculations"""
     print(f"DEBUG {metric_name}:")
     print(f"  Current: {current_val}")
     print(f"  Previous: {previous_val}")
-    
     if current_val is not None and previous_val is not None and previous_val != 0:
         yoy_pct = ((current_val - previous_val) / previous_val) * 100
         print(f"  YoY: {yoy_pct:.1f}%")
         return yoy_pct
     return None
 
+# ---------------------------
+# Robust path resolution
+# ---------------------------
 def _find_project_root(start: Path) -> Path:
     cur = start
     for _ in range(8):
@@ -135,7 +137,6 @@ def _cache_key(path: str, params: Optional[Dict[str, Any]]) -> str:
 # ---------------------------
 def _safe_num(x: Any) -> Optional[float]:
     try:
-        # If markupsafe.Markup is present, treat it like str
         from markupsafe import Markup  # type: ignore
         if isinstance(x, Markup):
             x = str(x)
@@ -159,7 +160,7 @@ def _safe_num(x: Any) -> Optional[float]:
         except Exception:
             return None
     try:
-        f = float(x)  # last resort
+        f = float(x)
         if math.isnan(f) or math.isinf(f):
             return None
         return f
@@ -167,18 +168,13 @@ def _safe_num(x: Any) -> Optional[float]:
         return None
 
 # ---------------------------
-# Custom Jinja2 functions to replace regex matching
+# Custom Jinja2 helpers
 # ---------------------------
 def _is_numeric(s: str) -> bool:
-    """Check if string represents a number using regex"""
     if not isinstance(s, str) or not s.strip():
         return False
-    pattern = r'^-?\d*\.?\d+$'
-    return bool(re.match(pattern, s.strip()))
+    return bool(re.match(r'^-?\d*\.?\d+$', s.strip()))
 
-# ---------------------------
-# Jinja filters that always coerce via _safe_num
-# ---------------------------
 def _fmt_money0(v: Any) -> str:
     n = _safe_num(v)
     return "—" if n is None else "${:,.0f}".format(n)
@@ -331,20 +327,16 @@ def fetch_estimates_optional(ticker: str) -> Dict[str, Optional[float]]:
     return {"revenue_est": rev_est, "ebitda_est": ebitda_est}
 
 # ---------------------------
-# NEW: Earnings context loader
+# Earnings context (optional)
 # ---------------------------
 def fetch_earnings_context(ticker: str) -> Dict[str, str]:
-    """Fetch recent earnings press releases and call transcripts for context."""
     context = {"press_release": "", "transcript": "", "summary": ""}
-
     try:
-        # Get recent earnings surprises for context
         surprises = _fmp_get(f"/api/v3/earnings-surprises/{ticker}", {"limit": 1}) or []
         if surprises:
             latest = surprises[0]
             period = latest.get("date", "")
             context["summary"] = f"Latest earnings ({period}): "
-
             eps_act = latest.get("actualEarningResult")
             eps_est = latest.get("estimatedEarning")
             if eps_act is not None and eps_est is not None:
@@ -357,12 +349,10 @@ def fetch_earnings_context(ticker: str) -> Dict[str, str]:
                 except Exception:
                     pass
 
-        # Get earnings call transcript excerpt
         transcripts = _fmp_get(f"/api/v3/earning_call_transcript/{ticker}", {"limit": 1}) or []
         if transcripts and isinstance(transcripts, list):
             transcript = transcripts[0].get("content", "")
             if transcript:
-                # Extract management discussion (first 2000 chars after earnings discussion)
                 lower = transcript.lower()
                 mgmt_start = lower.find("management discussion")
                 if mgmt_start == -1:
@@ -371,10 +361,8 @@ def fetch_earnings_context(ticker: str) -> Dict[str, str]:
                     context["transcript"] = transcript[mgmt_start:mgmt_start + 2000]
                 else:
                     context["transcript"] = transcript[:2000]
-
     except Exception as e:
         logger.warning(f"Failed to fetch earnings context for {ticker}: {e}")
-
     return context
 
 # ---------------------------
@@ -391,54 +379,109 @@ def _sum_last_n_quarters(rows: List[dict], key_candidates: List[str], n: int = 4
     return float(s) if not np.isnan(s) else None
 
 def _quarter_yoy_map(rows: List[dict]) -> Tuple[Optional[dict], Optional[dict]]:
-    """Get current quarter and same quarter from previous year."""
+    """Get current quarter and the same quarter from the prior year."""
     if not rows:
         return None, None
-    
-    q0 = rows[0]  # Current quarter (most recent)
+    q0 = rows[0]
     date0 = q0.get("date") or q0.get("calendarYear")
     if not date0:
         return q0, None
-    
-    # Extract year and quarter from date
-    date_str = str(date0)
-    if len(date_str) >= 10:  # YYYY-MM-DD format
-        y0 = int(date_str[:4])
-        month = int(date_str[5:7])
-        # Determine quarter based on month
-        current_quarter = (month - 1) // 3 + 1
-    else:
-        y0 = int(date_str[:4])
-        current_quarter = 1  # Default fallback
-    
-    # Find same quarter from previous year
-    q1 = None
+
+    d0 = str(date0)
+    y0 = int(d0[:4])
+    m0 = int(d0[5:7]) if len(d0) >= 7 else 1
+    qnum = (m0 - 1) // 3 + 1
+
     target_year = y0 - 1
-    
+    q1 = None
     for r in rows[1:]:
         d = r.get("date") or r.get("calendarYear")
         if not d:
             continue
-        
-        date_str = str(d)
-        if len(date_str) >= 10:
-            y = int(date_str[:4])
-            month = int(date_str[5:7])
-            quarter = (month - 1) // 3 + 1
-            
-            # Look for same quarter in previous year
-            if y == target_year and quarter == current_quarter:
-                q1 = r
-                break
-        else:
-            # Fallback for year-only dates
-            y = int(date_str[:4])
-            if y == target_year:
-                q1 = r
-                break
-    
+        ds = str(d)
+        y = int(ds[:4])
+        m = int(ds[5:7]) if len(ds) >= 7 else 1
+        if y == target_year and ((m - 1) // 3 + 1) == qnum:
+            q1 = r
+            break
     return q0, q1
 
+# ---- Fiscal helpers for YTD ----
+def _infer_fye_month(annual_is: List[dict], quarterly_is: List[dict]) -> int:
+    """
+    Infer fiscal year-end month. Prefer annual income-statement date (month of FY end).
+    Fallback: take the max month observed in quarterly statement dates (often 3/6/9/12).
+    """
+    try:
+        if annual_is and (annual_is[0].get("date") or annual_is[0].get("calendarYear")):
+            d = str(annual_is[0].get("date") or annual_is[0].get("calendarYear"))
+            if len(d) >= 7:
+                return int(d[5:7])
+    except Exception:
+        pass
+    months = []
+    for r in quarterly_is[:8]:
+        d = r.get("date")
+        if d and len(str(d)) >= 7:
+            months.append(int(str(d)[5:7]))
+    return max(months) if months else 12  # safe default
+
+def _fy_of(dt_str: str, fye_month: int) -> int:
+    y = int(dt_str[:4])
+    m = int(dt_str[5:7]) if len(dt_str) >= 7 else 1
+    return y if m <= fye_month else y + 1
+
+def _sum_ytd_fiscal(rows: List[dict], keys: List[str], last_q_date: str, fye_month: int) -> Optional[float]:
+    """Sum from fiscal-year start up to and including last_q_date."""
+    if not rows or not last_q_date:
+        return None
+    fy_cur = _fy_of(last_q_date, fye_month)
+    vals: List[float] = []
+    for r in rows:
+        d = r.get("date")
+        if not d:
+            continue
+        ds = str(d)
+        if _fy_of(ds, fye_month) == fy_cur and ds <= last_q_date:
+            v = _pick_number(r, keys)
+            vals.append(v if v is not None else np.nan)
+    s = np.nansum(vals)
+    return float(s) if not np.isnan(s) else None
+
+def _sum_prev_ytd_fiscal(rows: List[dict], keys: List[str], last_q_date: str, fye_month: int) -> Optional[float]:
+    """Sum the same number of quarters from the prior fiscal year."""
+    if not rows or not last_q_date:
+        return None
+    fy_cur = _fy_of(last_q_date, fye_month)
+
+    # Count how many quarters are included in current YTD
+    cur_q_dates = []
+    for r in rows:
+        d = r.get("date")
+        if d and _fy_of(str(d), fye_month) == fy_cur and str(d) <= last_q_date:
+            cur_q_dates.append(str(d))
+    q_count = len(cur_q_dates)
+    if q_count == 0:
+        return None
+
+    # Collect all prior-fy quarter dates, newest first like FMP does
+    prior_dates = [str(r.get("date")) for r in rows if r.get("date") and _fy_of(str(r.get("date")), fye_month) == fy_cur - 1]
+    prior_dates = prior_dates[:q_count]  # same number of quarters
+
+    vals: List[float] = []
+    for r in rows:
+        d = str(r.get("date") or "")
+        if d in prior_dates:
+            v = _pick_number(r, keys)
+            vals.append(v if v is not None else np.nan)
+            if len(vals) == len(prior_dates):
+                break
+    s = np.nansum(vals)
+    return float(s) if not np.isnan(s) else None
+
+# ---------------------------
+# Core financial assembly
+# ---------------------------
 def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     q = fetch_quarterlies(ticker)
     a = fetch_annuals(ticker)
@@ -446,30 +489,30 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     q_is = q["is"]; q_cf = q["cf"]
     a_is = a["is"]; a_cf = a["cf"]
 
-    # Field name variables for better Apple compatibility
-    revenue_keys = ["revenue", "totalRevenue"]
+    # Field name variants
+    revenue_keys = ["revenue", "totalRevenue", "totalRevenueTTM", "netSales"]
     ebitda_keys = ["ebitda", "EBITDA"]
     gp_keys = ["grossProfit"]
     ni_keys = ["netIncome"]
-    
-    # Cash flow field variations (for Apple compatibility)
+
     ocf_keys = [
         "netCashProvidedByOperatingActivities",
-        "netCashProvidedByUsedInOperatingActivities", 
+        "netCashProvidedByUsedInOperatingActivities",
         "operatingCashFlow",
         "netCashFromOperatingActivities",
-        "cashFromOperatingActivities"
+        "cashFromOperatingActivities",
     ]
-    
     capex_keys = [
-        "capitalExpenditure", 
+        "capitalExpenditure",
         "capitalExpenditures",
         "capex",
         "investmentsInPropertyPlantAndEquipment",
-        "paymentsForPropertyPlantAndEquipment"
+        "paymentsForPropertyPlantAndEquipment",
+        "purchaseOfPPE",
     ]
+    da_keys = ["depreciationAndAmortization", "depreciation", "amortization"]
 
-    # TTM calculations using consistent field names
+    # TTM
     rev_ttm = _sum_last_n_quarters(q_is, revenue_keys, 4)
     ebitda_ttm = _sum_last_n_quarters(q_is, ebitda_keys, 4)
     gp_ttm = _sum_last_n_quarters(q_is, gp_keys, 4)
@@ -478,7 +521,7 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     capex_ttm = _sum_last_n_quarters(q_cf, capex_keys, 4)
     fcf_ttm = (ocf_ttm + capex_ttm) if (ocf_ttm is not None and capex_ttm is not None) else None
 
-    # Quarter YoY mapping
+    # Quarter YoY
     q0_is, q1_is = _quarter_yoy_map(q_is)
     q0_cf, q1_cf = _quarter_yoy_map(q_cf)
 
@@ -487,19 +530,26 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
             return None
         return _pick_number(row, keys)
 
-    # Gross margin calculation
+    # Gross margin
     gm_pct = None
     rev_q = _get(q0_is, revenue_keys)
     gp_q = _get(q0_is, gp_keys)
     if gp_q is not None and rev_q:
         gm_pct = float(gp_q / rev_q * 100.0)
 
-    # Build quarter snapshot using consistent field names
+    # EBITDA fallback if missing: OI + D&A (when available)
+    ebitda_q = _get(q0_is, ebitda_keys)
+    if ebitda_q is None:
+        oi = _pick_number(q0_is or {}, ["operatingIncome"])
+        da = _pick_number(q0_is or {}, da_keys)
+        if oi is not None and da is not None:
+            ebitda_q = float(oi + da)
+
     q_snapshot = {
         "period": (q0_is or {}).get("date"),
         "revenue": rev_q,
         "gross_margin_pct": gm_pct,
-        "ebitda": _get(q0_is, ebitda_keys),
+        "ebitda": ebitda_q,
         "net_income": _get(q0_is, ni_keys),
         "ocf": _get(q0_cf, ocf_keys),
         "fcf": None,
@@ -511,125 +561,87 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
             "fcf": None,
         },
     }
-    
-    # Calculate FCF for current and previous quarters
+
+    # FCF (quarter)
     ocf_q = q_snapshot["ocf"]
     capex_q = _get(q0_cf, capex_keys)
     if ocf_q is not None and capex_q is not None:
         q_snapshot["fcf"] = float(ocf_q + capex_q)
-        
     ocf_y = q_snapshot["yoy"]["ocf"]
     capex_y = _get(q1_cf, capex_keys)
     if ocf_y is not None and capex_y is not None:
         q_snapshot["yoy"]["fcf"] = float(ocf_y + capex_y)
 
-    # Debug output AFTER calculations are complete
-    debug_yoy_calculation(
-        q_snapshot.get("revenue"), 
-        q_snapshot["yoy"].get("revenue"), 
-        "Revenue"
-    )
-    debug_yoy_calculation(
-        q_snapshot.get("ebitda"), 
-        q_snapshot["yoy"].get("ebitda"), 
-        "EBITDA"
-    )
-    debug_yoy_calculation(
-        q_snapshot.get("net_income"), 
-        q_snapshot["yoy"].get("net_income"), 
-        "Net Income"
-    )
-    debug_yoy_calculation(
-        q_snapshot.get("ocf"), 
-        q_snapshot["yoy"].get("ocf"), 
-        "Operating Cash Flow"
-    )
-    debug_yoy_calculation(
-        q_snapshot.get("fcf"), 
-        q_snapshot["yoy"].get("fcf"), 
-        "Free Cash Flow"
-    )
-    
+    # Debug
+    debug_yoy_calculation(q_snapshot.get("revenue"), q_snapshot["yoy"].get("revenue"), "Revenue")
+    debug_yoy_calculation(q_snapshot.get("ebitda"), q_snapshot["yoy"].get("ebitda"), "EBITDA")
+    debug_yoy_calculation(q_snapshot.get("net_income"), q_snapshot["yoy"].get("net_income"), "Net Income")
+    debug_yoy_calculation(q_snapshot.get("ocf"), q_snapshot["yoy"].get("ocf"), "Operating Cash Flow")
+    debug_yoy_calculation(q_snapshot.get("fcf"), q_snapshot["yoy"].get("fcf"), "Free Cash Flow")
     print(f"Q0 date: {q0_is.get('date') if q0_is else None}")
     print(f"Q1 date: {q1_is.get('date') if q1_is else None}")
-    
-    this_year = datetime.utcnow().year
 
-    def _sum_ytd(rows: List[dict], keys: List[str], target_year: int) -> Optional[float]:
-    """Sum YTD through the same number of quarters as current year has available"""
-    current_year = datetime.utcnow().year
-    
-    # Find the latest quarter in current year and determine how many quarters we have
-    current_year_quarters = []
-    for r in rows:
-        d = r.get("date")
-        if d and int(str(d)[:4]) == current_year:
-            current_year_quarters.append(r)
-    
-    if not current_year_quarters:
-        # If no current year data, just sum all available quarters for target year
-        vals = []
-        for r in rows:
-            d = r.get("date")
-            if d and int(str(d)[:4]) == target_year:
-                v = _pick_number(r, keys)
-                vals.append(v if v is not None else np.nan)
-        if not vals:
-            return None
-        s = np.nansum(vals)
-        return float(s) if not np.isnan(s) else None
-    
-    # Determine how many quarters the current year has
-    quarters_to_include = len(current_year_quarters)
-    
-    # For target year, sum the same number of most recent quarters
-    target_year_quarters = []
-    for r in rows:
-        d = r.get("date")
-        if d and int(str(d)[:4]) == target_year:
-            target_year_quarters.append(r)
-    
-    # Take only the first N quarters (most recent ones, since data is sorted desc)
-    target_quarters_subset = target_year_quarters[:quarters_to_include]
-    
-    vals = []
-    for r in target_quarters_subset:
-        v = _pick_number(r, keys)
-        vals.append(v if v is not None else np.nan)
-    
-    if not vals:
-        return None
-    
-    s = np.nansum(vals)
-    return float(s) if not np.isnan(s) else None
-    
-    # YTD snapshots using consistent field names
+    # ---------- Fiscal YTD (fix) ----------
+    # Determine fiscal year-end month and last quarter end date
+    last_q_date = (q0_is or {}).get("date")
+    last_q_date = str(last_q_date) if last_q_date else None
+    fye_month = _infer_fye_month(a_is, q_is)
+
+    def _ytd_metric(keys: List[str]) -> Tuple[Optional[float], Optional[float]]:
+        cur = _sum_ytd_fiscal(q_is if keys in (revenue_keys, ebitda_keys, gp_keys, ni_keys) else q_cf,
+                              keys, last_q_date, fye_month)
+        prv = _sum_prev_ytd_fiscal(q_is if keys in (revenue_keys, ebitda_keys, gp_keys, ni_keys) else q_cf,
+                                   keys, last_q_date, fye_month)
+        return cur, prv
+
+    rev_ytd, rev_ytd_prev = _ytd_metric(revenue_keys)
+    ni_ytd, ni_ytd_prev = _ytd_metric(ni_keys)
+
+    # EBITDA YTD (with fallback)
+    ebitda_ytd, ebitda_ytd_prev = _ytd_metric(ebitda_keys)
+    if ebitda_ytd is None or ebitda_ytd_prev is None:
+        # try OI + D&A fiscal sums as fallback
+        oi_ytd = _sum_ytd_fiscal(q_is, ["operatingIncome"], last_q_date, fye_month)
+        da_ytd = _sum_ytd_fiscal(q_is, ["depreciationAndAmortization", "depreciation", "amortization"], last_q_date, fye_month)
+        oi_prev = _sum_prev_ytd_fiscal(q_is, ["operatingIncome"], last_q_date, fye_month)
+        da_prev = _sum_prev_ytd_fiscal(q_is, ["depreciationAndAmortization", "depreciation", "amortization"], last_q_date, fye_month)
+        if ebitda_ytd is None and oi_ytd is not None and da_ytd is not None:
+            ebitda_ytd = float(oi_ytd + da_ytd)
+        if ebitda_ytd_prev is None and oi_prev is not None and da_prev is not None:
+            ebitda_ytd_prev = float(oi_prev + da_prev)
+
+    # CFO & CapEx YTD (cash flow statements)
+    ocf_ytd = _sum_ytd_fiscal(q_cf, ocf_keys, last_q_date, fye_month)
+    ocf_ytd_prev = _sum_prev_ytd_fiscal(q_cf, ocf_keys, last_q_date, fye_month)
+    capex_ytd = _sum_ytd_fiscal(q_cf, capex_keys, last_q_date, fye_month)
+    capex_ytd_prev = _sum_prev_ytd_fiscal(q_cf, capex_keys, last_q_date, fye_month)
+
+    fcf_ytd = float(ocf_ytd + capex_ytd) if (ocf_ytd is not None and capex_ytd is not None) else None
+    fcf_ytd_prev = float(ocf_ytd_prev + capex_ytd_prev) if (ocf_ytd_prev is not None and capex_ytd_prev is not None) else None
+
+    # YTD snapshots
+    fy_label = None
+    if last_q_date:
+        fy_label = _fy_of(last_q_date, fye_month)
+
     ytd_snapshot = {
-        "year": this_year,
-        "revenue": _sum_ytd(q_is, revenue_keys, this_year),
-        "ebitda": _sum_ytd(q_is, ebitda_keys, this_year),
-        "net_income": _sum_ytd(q_is, ni_keys, this_year),
-        "ocf": _sum_ytd(q_cf, ocf_keys, this_year),
-        "fcf": None,
+        "year": fy_label,
+        "revenue": rev_ytd,
+        "ebitda": ebitda_ytd,
+        "net_income": ni_ytd,
+        "ocf": ocf_ytd,
+        "fcf": fcf_ytd,
     }
-    if ytd_snapshot["ocf"] is not None:
-        capex_ytd = _sum_ytd(q_cf, capex_keys, this_year) or 0.0
-        ytd_snapshot["fcf"] = float(ytd_snapshot["ocf"] + capex_ytd)
-
-    # Previous calendar YTD snapshot
-    ytd_prev_year = this_year - 1
     ytd_prev_snapshot = {
-        "year": ytd_prev_year,
-        "revenue": _sum_ytd(q_is, revenue_keys, ytd_prev_year),
-        "ebitda": _sum_ytd(q_is, ebitda_keys, ytd_prev_year),
-        "net_income": _sum_ytd(q_is, ni_keys, ytd_prev_year),
-        "ocf": _sum_ytd(q_cf, ocf_keys, ytd_prev_year),
-        "fcf": None,
+        "year": fy_label - 1 if fy_label else None,
+        "revenue": rev_ytd_prev,
+        "ebitda": ebitda_ytd_prev,
+        "net_income": ni_ytd_prev,
+        "ocf": ocf_ytd_prev,
+        "fcf": fcf_ytd_prev,
     }
-    if ytd_prev_snapshot["ocf"] is not None:
-        capex_ytd_prev = _sum_ytd(q_cf, capex_keys, ytd_prev_year) or 0.0
-        ytd_prev_snapshot["fcf"] = float(ytd_prev_snapshot["ocf"] + capex_ytd_prev)
 
+    # ---------- Last 2 fiscal years table ----------
     def _two_year_table() -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         years: List[str] = []
@@ -672,6 +684,9 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
         "raw": {"q_is": q_is, "q_cf": q_cf, "a_is": a_is, "a_cf": a_cf},
     }
 
+# ---------------------------
+# Multiples, peers, sector, tech
+# ---------------------------
 def compute_multiples(ev: Optional[float], ttm: Dict[str, Optional[float]]) -> Dict[str, Optional[float]]:
     rev = ttm.get("revenue")
     ebitda = ttm.get("ebitda")
@@ -775,10 +790,8 @@ def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
         sect = payload.get("sector")
         tech = payload.get("tech")
 
-        # Get earnings context for enhanced analysis (always fetch fresh here)
         earnings_context = fetch_earnings_context(ticker)
 
-        # Enhanced financial analysis with earnings context
         context_info = ""
         if earnings_context.get("summary"):
             context_info = f"Recent earnings context: {earnings_context['summary']}"
@@ -786,26 +799,20 @@ def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
             context_info += f"Management comments: {earnings_context['transcript'][:500]}..."
 
         p1 = (
-            f"Analyze {ticker}'s last quarter and YTD performance with YoY context, focusing on business drivers and operational factors. "
-            f"Financial data: {fin}. "
-            f"{context_info} "
-            f"Explain WHY key metrics changed (revenue, margins, cash flow) based on business fundamentals. "
-            f"Focus on: Revenue drivers, margin dynamics, cash generation quality, operational efficiency. "
-            f"Return 6-8 analytical bullets starting with '- '. Avoid just stating numbers - explain the business story."
+            f"Analyze {ticker}'s last quarter and fiscal YTD performance with YoY context, focusing on business drivers and operational factors. "
+            f"Financial data: {fin}. {context_info} "
+            f"Explain WHY key metrics changed (revenue, margins, cash flow). "
+            f"Return 6-8 analytical bullets starting with '- '."
         )
-
         p2 = (
             f"Industry analysis and competitive positioning for {ticker}. "
             f"Sector={prof.get('sector')}, Industry={prof.get('industry')}. "
-            f"Analyze competitive dynamics, market positioning, and industry-specific factors affecting performance. "
-            f"Return 6-8 bullets starting with '- '. Focus on strategic context and competitive advantages/challenges."
+            f"Return 6-8 bullets starting with '- '."
         )
-
         p3 = (
             f"Sector and technical analysis for {ticker}. "
             f"Sector momentum data: {sect}. Technical indicators: {tech}. "
-            f"Assess sector rotation trends, relative performance vs peers, and technical setup. "
-            f"Return 4-6 bullets starting with '- '. Connect technical patterns to fundamental thesis."
+            f"Return 4-6 bullets starting with '- '."
         )
 
         fin_md = ask(p1)
@@ -822,7 +829,7 @@ def llm_commentary(payload: Dict[str, Any], ticker: str) -> Dict[str, str]:
         return {"financials": "", "industry": "", "sector": ""}
 
 # ---------------------------
-# Rendering (fallback template uses safe filters, not .format)
+# Rendering (fallback template)
 # ---------------------------
 _FALLBACK_CSS = """
 :root{--border:#e8e8e8;--muted:#666;--bg:#fff;--fg:#111}
@@ -1051,8 +1058,12 @@ def _build_render_context(t: str) -> Dict[str, Any]:
     ]
     header_map = {r["label"]: r["value"] for r in header_table}
 
-    # include ytd_prev in the snapshot we pass onward
-    fin_snapshot = {"quarter": fundamentals["quarter"], "ytd": fundamentals["ytd"], "ytd_prev": fundamentals["ytd_prev"], "ttm": fundamentals["ttm"]}
+    fin_snapshot = {
+        "quarter": fundamentals["quarter"],
+        "ytd": fundamentals["ytd"],
+        "ytd_prev": fundamentals["ytd_prev"],
+        "ttm": fundamentals["ttm"],
+    }
 
     sector_inputs = {
         "chosen_sector_etf": sector.get("sector_etf"),
@@ -1062,7 +1073,6 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         "peer_table_preview": peer_df.head(6).to_dict(orient="records"),
     }
 
-    # NEW: add earnings context, and pass it along to the commentary payload
     earnings_context = fetch_earnings_context(t)
 
     commentary = llm_commentary({
@@ -1070,7 +1080,7 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         "profile": profile,
         "sector": sector_inputs,
         "tech": tech,
-        "earnings": earnings_context,  # included for completeness (though llm_commentary fetches fresh too)
+        "earnings": earnings_context,
     }, t)
 
     return {
@@ -1078,7 +1088,7 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         "ticker": t,
         "profile": profile,
         "header_table": header_table,
-        "header_map": header_map,  # helpful for UI template variants
+        "header_map": header_map,
         "two_year": fundamentals["annual_two_years_table"],
         "estimates": estimates,
         "fin_snapshot": fin_snapshot,
@@ -1094,18 +1104,14 @@ def _make_env() -> Environment:
         loader=FileSystemLoader(str(TEMPLATES_DIR)),
         autoescape=select_autoescape(["html", "xml"])
     )
-    # register robust filters
     env.filters["money0"] = _fmt_money0
     env.filters["money2"] = _fmt_money2
     env.filters["mult2"]  = _fmt_mult2
     env.filters["pct1"]   = lambda v: _fmt_pct(v, 1)
     env.filters["pct2"]   = lambda v: _fmt_pct(v, 2)
     env.filters["num1"]   = _fmt_num1
-    
-    # Add custom functions to globals for template use
     env.globals['is_numeric'] = _is_numeric
     env.globals['safe_num'] = _safe_num
-    
     return env
 
 def generate_html_report(payload: Dict[str, Any]) -> str:
@@ -1127,7 +1133,6 @@ def generate_html_report(payload: Dict[str, Any]) -> str:
         return "<h3>Error</h3><p>Missing FMP_API_KEY in environment. Set it in Render → Environment.</p>"
 
     ctx = _build_render_context(t)
-
     env = _make_env()
     template = _load_template(env)
 
@@ -1204,4 +1209,3 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
-
