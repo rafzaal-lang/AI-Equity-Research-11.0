@@ -555,46 +555,53 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     
     this_year = datetime.utcnow().year
 
-    def _sum_ytd(rows: List[dict], keys: List[str], year: int) -> Optional[float]:
-        """Sum YTD through the same period as current year"""
-        # First, find the latest quarter date in current year
-        current_year = datetime.utcnow().year
-        latest_current_date = None
-        
-        for r in rows:
-            d = r.get("date")
-            if d and int(str(d)[:4]) == current_year:
-                if latest_current_date is None or str(d) > str(latest_current_date):
-                    latest_current_date = d
-        
-        if not latest_current_date:
-            return None
-        
-        # Extract month/day from latest current date to compare same period
-        latest_month_day = str(latest_current_date)[5:]  # Gets "06-28" from "2025-06-28"
-        
+    def _sum_ytd(rows: List[dict], keys: List[str], target_year: int) -> Optional[float]:
+    """Sum YTD through the same number of quarters as current year has available"""
+    current_year = datetime.utcnow().year
+    
+    # Find the latest quarter in current year and determine how many quarters we have
+    current_year_quarters = []
+    for r in rows:
+        d = r.get("date")
+        if d and int(str(d)[:4]) == current_year:
+            current_year_quarters.append(r)
+    
+    if not current_year_quarters:
+        # If no current year data, just sum all available quarters for target year
         vals = []
         for r in rows:
             d = r.get("date")
-            if not d:
-                continue
-            date_str = str(d)
-            if int(date_str[:4]) == year:
-                # For previous year, only include quarters through same month/day
-                if year < current_year:
-                    quarter_month_day = date_str[5:]
-                    if quarter_month_day <= latest_month_day:
-                        v = _pick_number(r, keys)
-                        vals.append(v if v is not None else np.nan)
-                else:
-                    # For current year, include all available quarters
-                    v = _pick_number(r, keys)
-                    vals.append(v if v is not None else np.nan)
-        
+            if d and int(str(d)[:4]) == target_year:
+                v = _pick_number(r, keys)
+                vals.append(v if v is not None else np.nan)
         if not vals:
             return None
         s = np.nansum(vals)
         return float(s) if not np.isnan(s) else None
+    
+    # Determine how many quarters the current year has
+    quarters_to_include = len(current_year_quarters)
+    
+    # For target year, sum the same number of most recent quarters
+    target_year_quarters = []
+    for r in rows:
+        d = r.get("date")
+        if d and int(str(d)[:4]) == target_year:
+            target_year_quarters.append(r)
+    
+    # Take only the first N quarters (most recent ones, since data is sorted desc)
+    target_quarters_subset = target_year_quarters[:quarters_to_include]
+    
+    vals = []
+    for r in target_quarters_subset:
+        v = _pick_number(r, keys)
+        vals.append(v if v is not None else np.nan)
+    
+    if not vals:
+        return None
+    
+    s = np.nansum(vals)
+    return float(s) if not np.isnan(s) else None
     
     # YTD snapshots using consistent field names
     ytd_snapshot = {
@@ -1197,3 +1204,4 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
+
