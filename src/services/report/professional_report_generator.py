@@ -1036,6 +1036,30 @@ def fetch_profile_safe(ticker: str) -> Dict[str, Optional[str]]:
 # ---------------------------
 # Core renderers (string + file)
 # ---------------------------
+def _filter_peers(peers: List[str], min_mcap: float = 5e9) -> List[str]:
+    """
+    Clean raw peer list: remove microcaps / illiquid names.
+    Keeps only tickers with market cap >= min_mcap.
+    """
+    clean: List[str] = []
+    seen = set()
+    for p in peers or []:
+        if not isinstance(p, str):
+            continue
+        t = p.upper().strip()
+        if not t or t in seen:
+            continue
+        try:
+            q = fetch_quote_block(t)
+            mcap = q.get("market_cap")
+            if mcap and float(mcap) >= float(min_mcap):
+                clean.append(t)
+                seen.add(t)
+        except Exception:
+            continue
+    return clean[:12]  # keep a small pool; we’ll trim to 6 later
+
+
 def _build_render_context(t: str) -> Dict[str, Any]:
     profile = fetch_profile_safe(t)
     quote = fetch_quote_block(t)
@@ -1045,17 +1069,22 @@ def _build_render_context(t: str) -> Dict[str, Any]:
     tech = ticker_technicals(t)
     sector = sector_momentum(profile.get("sector"))
 
-        peers = fetch_peers(t)
+    # -----------------------------
+    # Better peers (flexible for ANY ticker)
+    # -----------------------------
+    peers: List[str] = fetch_peers(t) or []
+    peers = _filter_peers(peers)
 
-    # NEW: If FMP peers are empty/noisy, try our production classifier
+    # If FMP peers were empty/low quality, try the production classifier (SEC + FMP blend)
     if not peers:
         try:
             from src.services.peers.peer_classifier import peer_universe
-            peers = peer_universe(t, max_peers=6, fmp_api_key=FMP_API_KEY)
+            peers = peer_universe(t, max_peers=6, fmp_api_key=FMP_API_KEY) or []
         except Exception as e:
-            logger.warning("peer classifier fallback failed: %s", e)
+            logger.warning("peer classifier fallback failed for %s: %s", t, e)
+            peers = []
 
-    # Final static fallback if still empty
+    # Final static fallback only if still empty (ensures app works for obscure tickers too)
     if not peers:
         static = {
             "XLK": ["AAPL","MSFT","NVDA","AVGO","CRM","ADBE"],
@@ -1073,7 +1102,10 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         etf = SECTOR_SPDRS.get(profile.get("sector") or "", "SPY")
         peers = [p for p in static.get(etf, ["AAPL","MSFT","NVDA","AMZN","META","GOOGL"]) if p.upper() != t][:6]
 
-    
+    # Deduplicate and trim to ≤6
+    peers = [x for i, x in enumerate(peers) if x and peers.index(x) == i][:6]
+
+    # Build the peer table as before (unchanged downstream)
     peer_df, five_year = build_peers_table(t, peers)
 
     header_table = [
@@ -1088,6 +1120,7 @@ def _build_render_context(t: str) -> Dict[str, Any]:
     ]
     header_map = {r["label"]: r["value"] for r in header_table}
 
+    # include ytd_prev in the snapshot we pass onward
     fin_snapshot = {
         "quarter": fundamentals["quarter"],
         "ytd": fundamentals["ytd"],
@@ -1103,6 +1136,7 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         "peer_table_preview": peer_df.head(6).to_dict(orient="records"),
     }
 
+    # Earnings context (unchanged)
     earnings_context = fetch_earnings_context(t)
 
     commentary = llm_commentary({
@@ -1112,6 +1146,22 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         "tech": tech,
         "earnings": earnings_context,
     }, t)
+
+    return {
+        "as_of": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "ticker": t,
+        "profile": profile,
+        "header_table": header_table,
+        "header_map": header_map,
+        "two_year": fundamentals["annual_two_years_table"],
+        "estimates": estimates,
+        "fin_snapshot": fin_snapshot,
+        "peer_rows": peer_df.to_dict(orient="records"),
+        "peer_five_year": five_year,
+        "sector_inputs": sector_inputs,
+        "technical": {"rsi_14": _safe_num(tech.get("rsi_14"))},
+        "commentary": commentary,
+    }
 
     return {
         "as_of": datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
@@ -1239,5 +1289,6 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
+
 
 
