@@ -1026,7 +1026,17 @@ def _build_render_context(t: str) -> Dict[str, Any]:
     tech = ticker_technicals(t)
     sector = sector_momentum(profile.get("sector"))
 
-    peers = fetch_peers(t)
+        peers = fetch_peers(t)
+
+    # NEW: If FMP peers are empty/noisy, try our production classifier
+    if not peers:
+        try:
+            from src.services.peers.peer_classifier import peer_universe
+            peers = peer_universe(t, max_peers=6, fmp_api_key=FMP_API_KEY)
+        except Exception as e:
+            logger.warning("peer classifier fallback failed: %s", e)
+
+    # Final static fallback if still empty
     if not peers:
         static = {
             "XLK": ["AAPL","MSFT","NVDA","AVGO","CRM","ADBE"],
@@ -1044,6 +1054,7 @@ def _build_render_context(t: str) -> Dict[str, Any]:
         etf = SECTOR_SPDRS.get(profile.get("sector") or "", "SPY")
         peers = [p for p in static.get(etf, ["AAPL","MSFT","NVDA","AMZN","META","GOOGL"]) if p.upper() != t][:6]
 
+    
     peer_df, five_year = build_peers_table(t, peers)
 
     header_table = [
@@ -1209,3 +1220,4 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
+
