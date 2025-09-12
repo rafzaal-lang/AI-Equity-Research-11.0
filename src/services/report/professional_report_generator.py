@@ -44,6 +44,18 @@ SPY = "SPY"
 # ---------------------------
 # Robust path resolution
 # ---------------------------
+def debug_yoy_calculation(current_val, previous_val, metric_name):
+    """Debug helper to verify YoY calculations"""
+    print(f"DEBUG {metric_name}:")
+    print(f"  Current: {current_val}")
+    print(f"  Previous: {previous_val}")
+    
+    if current_val is not None and previous_val is not None and previous_val != 0:
+        yoy_pct = ((current_val - previous_val) / previous_val) * 100
+        print(f"  YoY: {yoy_pct:.1f}%")
+        return yoy_pct
+    return None
+
 def _find_project_root(start: Path) -> Path:
     cur = start
     for _ in range(8):
@@ -481,6 +493,32 @@ def build_financial_blocks(ticker: str) -> Dict[str, Any]:
     if ocf_y is not None and capex_y is not None:
         q_snapshot["yoy"]["fcf"] = float(ocf_y + capex_y)
 
+    debug_yoy_calculation(
+        q_snapshot.get("revenue"), 
+        q_snapshot["yoy"].get("revenue"), 
+        "Revenue"
+    )
+    debug_yoy_calculation(
+        q_snapshot.get("ebitda"), 
+        q_snapshot["yoy"].get("ebitda"), 
+        "EBITDA"
+    )
+    debug_yoy_calculation(
+        q_snapshot.get("net_income"), 
+        q_snapshot["yoy"].get("net_income"), 
+        "Net Income"
+    )
+    debug_yoy_calculation(
+        q_snapshot.get("ocf"), 
+        q_snapshot["yoy"].get("ocf"), 
+        "Operating Cash Flow"
+    )
+    debug_yoy_calculation(
+        q_snapshot.get("fcf"), 
+        q_snapshot["yoy"].get("fcf"), 
+        "Free Cash Flow"
+    )
+    
     this_year = datetime.utcnow().year
     def _sum_ytd(rows: List[dict], keys: List[str], year: int) -> Optional[float]:
         vals = []
@@ -1096,4 +1134,5 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
+
 
