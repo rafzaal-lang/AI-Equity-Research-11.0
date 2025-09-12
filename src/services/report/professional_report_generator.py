@@ -737,6 +737,25 @@ def build_peers_table(subject: str, peers: List[str]) -> Tuple[pd.DataFrame, Dic
 
     return df, five_avg
 
+def _filter_peers(peers: List[str], min_mcap: float = 5e9) -> List[str]:
+    """
+    Filter raw peer list to remove penny/micro-cap tickers.
+    Uses market cap threshold and sanity checks.
+    """
+    clean = []
+    for p in peers:
+        try:
+            q = fetch_quote_block(p)
+            if not q.get("market_cap"):
+                continue
+            if q["market_cap"] < min_mcap:
+                continue
+            clean.append(p.upper())
+        except Exception:
+            continue
+    return clean
+
+
 def sector_momentum(sector_guess: Optional[str]) -> Dict[str, Any]:
     tickers = list(SECTOR_SPDRS.values()) + [SPY]
     ret = {}
@@ -1220,4 +1239,5 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
+
 
