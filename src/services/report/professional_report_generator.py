@@ -379,22 +379,52 @@ def _sum_last_n_quarters(rows: List[dict], key_candidates: List[str], n: int = 4
     return float(s) if not np.isnan(s) else None
 
 def _quarter_yoy_map(rows: List[dict]) -> Tuple[Optional[dict], Optional[dict]]:
+    """Get current quarter and same quarter from previous year."""
     if not rows:
         return None, None
-    q0 = rows[0]
+    
+    q0 = rows[0]  # Current quarter (most recent)
     date0 = q0.get("date") or q0.get("calendarYear")
     if not date0:
         return q0, None
-    y0 = int(str(date0)[:4])
+    
+    # Extract year and quarter from date
+    date_str = str(date0)
+    if len(date_str) >= 10:  # YYYY-MM-DD format
+        y0 = int(date_str[:4])
+        month = int(date_str[5:7])
+        # Determine quarter based on month
+        current_quarter = (month - 1) // 3 + 1
+    else:
+        y0 = int(date_str[:4])
+        current_quarter = 1  # Default fallback
+    
+    # Find same quarter from previous year
     q1 = None
+    target_year = y0 - 1
+    
     for r in rows[1:]:
         d = r.get("date") or r.get("calendarYear")
         if not d:
             continue
-        y = int(str(d)[:4])
-        if y == y0 - 1:
-            q1 = r
-            break
+        
+        date_str = str(d)
+        if len(date_str) >= 10:
+            y = int(date_str[:4])
+            month = int(date_str[5:7])
+            quarter = (month - 1) // 3 + 1
+            
+            # Look for same quarter in previous year
+            if y == target_year and quarter == current_quarter:
+                q1 = r
+                break
+        else:
+            # Fallback for year-only dates
+            y = int(date_str[:4])
+            if y == target_year:
+                q1 = r
+                break
+    
     return q0, q1
 
 def build_financial_blocks(ticker: str) -> Dict[str, Any]:
@@ -1066,3 +1096,4 @@ class _ProGenNS:
 
 # what the UI imports
 professional_report_generator = progen = _ProGenNS()
+
