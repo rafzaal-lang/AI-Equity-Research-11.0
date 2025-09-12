@@ -69,7 +69,7 @@
 {% macro yoy_val(cur, prev) -%}
   {%- set c = safe_num(cur) -%}{%- set p = safe_num(prev) -%}
   {%- if c is not none and p is not none and p != 0 -%}
-    {{ ((c - p) / p * 100.0)|float }}
+    {{ ((c - p) / p * 100.0)|round(1) }}
   {%- else -%}{{ none }}{%- endif -%}
 {%- endmacro %}
 {% macro yoy_badge(cur, prev) -%}
@@ -91,6 +91,8 @@
       {{ val }}
     {%- endif -%}
   {%- endmacro %}
+
+  
 
   <header class="hero">
     <div class="brand">
@@ -290,3 +292,4 @@
 </div>
 </body>
 </html>
+
